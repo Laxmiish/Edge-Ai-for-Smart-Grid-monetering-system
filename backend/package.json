@@ -1,0 +1,17 @@
+{
+  "name": "smart-grid-backend",
+  "version": "1.0.0",
+  "description": "Central backend server for Edge AI Smart Grid Monitoring System",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "kafkajs": "^2.2.4",
+    "pg": "^8.13.0",
+    "dotenv": "^16.4.0",
+    "cors": "^2.8.5"
+  }
+}
