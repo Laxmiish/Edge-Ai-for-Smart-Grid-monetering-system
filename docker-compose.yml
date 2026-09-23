@@ -1,0 +1,103 @@
+version: '3.8'
+
+services:
+  # 1. PostgreSQL Database
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    container_name: smart_grid_postgres
+    environment:
+      POSTGRES_DB: smart_grid
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - grid_network
+
+  # 2. Zookeeper (Required for Kafka)
+  zookeeper:
+    image: bitnami/zookeeper:latest
+    container_name: smart_grid_zookeeper
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    ports:
+      - "2181:2181"
+    networks:
+      - grid_network
+
+  # 3. Kafka
+  kafka:
+    image: bitnami/kafka:latest
+    container_name: smart_grid_kafka
+    environment:
+      - KAFKA_BROKER_ID=1
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - ALLOW_PLAINTEXT_LISTENER=yes
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    networks:
+      - grid_network
+
+  # 4. Central Backend (Express.js)
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: smart_grid_backend
+    environment:
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DATABASE=smart_grid
+      - PG_USER=postgres
+      - PG_PASSWORD=postgres
+      - KAFKA_BROKER=kafka:9092
+      - PORT=3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+      - kafka
+    networks:
+      - grid_network
+
+  # 5. Edge DPU (Raspberry Pi Simulator)
+  dpu:
+    build:
+      context: .
+      dockerfile: dpu/Dockerfile
+    container_name: smart_grid_dpu
+    # Simulate a resource-constrained Edge device (e.g. Raspberry Pi)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    environment:
+      # host.docker.internal allows the Docker container to hit the Substation running on your host machine
+      - SUBSTATION_ENDPOINT=http://host.docker.internal:5001/api/substation/ingest
+      # Reach the backend via the Docker network
+      - BACKEND_CONFIG_URL=http://backend:3000/api/config
+    volumes:
+      # Map the model files from host so the DPU can use them
+      - ./transformer_netload_model.pkl:/app/transformer_netload_model.pkl
+      - ./transformer_solar_model.pkl:/app/transformer_solar_model.pkl
+      - ./model_feature_cols.pkl:/app/model_feature_cols.pkl
+      # Persist the local sqlite cache on the host so it isn't lost on restart
+      - ./dpu_data:/app/dpu
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - grid_network
+
+networks:
+  grid_network:
+    driver: bridge
+
+volumes:
+  pgdata:
