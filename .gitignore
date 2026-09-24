@@ -1,4 +1,39 @@
-node_modules/ 
-__pycache__/ 
-dpu_data/ 
-*.db 
+# ═══════════════════════════════════════
+# Dependencies
+# ═══════════════════════════════════════
+node_modules/
+__pycache__/
+*.pyc
+
+# ═══════════════════════════════════════
+# Local databases (generated at runtime)
+# ═══════════════════════════════════════
+*.db
+dpu_data/
+substations/*.db
+
+# ═══════════════════════════════════════
+# Environment variables (may contain secrets)
+# ═══════════════════════════════════════
+.env
+.env.local
+.env.production
+
+# ═══════════════════════════════════════
+# Build outputs
+# ═══════════════════════════════════════
+frontend/dist/
+
+# ═══════════════════════════════════════
+# OS / Editor junk
+# ═══════════════════════════════════════
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/
+
+# ═══════════════════════════════════════
+# Docker persistent volumes
+# ═══════════════════════════════════════
+pgdata/

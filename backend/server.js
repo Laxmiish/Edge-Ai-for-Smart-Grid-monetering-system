@@ -271,12 +271,17 @@ app.get('/api/health', (req, res) => {
  */
 // -- AUTH ROUTES --
 app.post('/api/auth/consumer', async (req, res) => {
-  const { consumerId, phone } = req.body;
-  if (!pgConnected) return res.status(503).json({ ok: false, message: 'Database is still starting up. Please wait 5 seconds and try again.' });
-  const result = await pool.query('SELECT * FROM consumers WHERE id = $1', [consumerId]);
-  if (result.rows.length === 0) return res.status(401).json({ ok: false, message: "No consumer found." });
-  if (result.rows[0].phone !== phone) return res.status(401).json({ ok: false, message: "Incorrect mobile number." });
-  res.json({ ok: true, consumer: mapConsumerDBtoFrontend(result.rows[0]) });
+  try {
+    const { consumerId, phone } = req.body;
+    if (!pgConnected) return res.status(503).json({ ok: false, message: 'Database is still starting up. Please wait 5 seconds and try again.' });
+    const result = await pool.query('SELECT * FROM consumers WHERE id = $1', [consumerId]);
+    if (result.rows.length === 0) return res.status(401).json({ ok: false, message: "No consumer found." });
+    if (result.rows[0].phone !== phone) return res.status(401).json({ ok: false, message: "Incorrect mobile number." });
+    res.json({ ok: true, consumer: mapConsumerDBtoFrontend(result.rows[0]) });
+  } catch (err) {
+    console.error('[API] /auth/consumer error:', err.message);
+    res.status(500).json({ ok: false, message: 'Internal server error' });
+  }
 });
 
 app.post('/api/auth/gov', (req, res) => {
@@ -287,24 +292,39 @@ app.post('/api/auth/gov', (req, res) => {
 
 // -- CONSUMERS ROUTES --
 app.get('/api/consumers', async (req, res) => {
-  if (!pgConnected) return res.status(503).json([]);
-  const result = await pool.query('SELECT * FROM consumers');
-  res.json(result.rows.map(mapConsumerDBtoFrontend));
+  try {
+    if (!pgConnected) return res.status(503).json([]);
+    const result = await pool.query('SELECT * FROM consumers');
+    res.json(result.rows.map(mapConsumerDBtoFrontend));
+  } catch (err) {
+    console.error('[API] /consumers error:', err.message);
+    res.status(500).json([]);
+  }
 });
 
 app.post('/api/consumers/:id/pay', async (req, res) => {
-  const { id } = req.params;
-  if (!pgConnected) return res.status(503).json({ error: 'DB down' });
-  await pool.query('UPDATE consumers SET bill_status = $1 WHERE id = $2', ['Paid', id]);
-  await runAutomatedSmartBilling(id, req.body.amount);
-  res.json({ ok: true });
+  try {
+    const { id } = req.params;
+    if (!pgConnected) return res.status(503).json({ error: 'DB down' });
+    await pool.query('UPDATE consumers SET bill_status = $1 WHERE id = $2', ['Paid', id]);
+    await runAutomatedSmartBilling(id, req.body.amount);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[API] /consumers/pay error:', err.message);
+    res.status(500).json({ ok: false, message: 'Payment processing failed' });
+  }
 });
 
 // -- TRANSFORMERS ROUTES --
 app.get('/api/transformers', async (req, res) => {
-  if (!pgConnected) return res.status(503).json([]);
-  const result = await pool.query('SELECT * FROM transformers');
-  res.json(result.rows.map(mapTransformerDBtoFrontend));
+  try {
+    if (!pgConnected) return res.status(503).json([]);
+    const result = await pool.query('SELECT * FROM transformers');
+    res.json(result.rows.map(mapTransformerDBtoFrontend));
+  } catch (err) {
+    console.error('[API] /transformers error:', err.message);
+    res.status(500).json([]);
+  }
 });
 
 app.post('/api/transformers/:id/toggle-solar', async (req, res) => {

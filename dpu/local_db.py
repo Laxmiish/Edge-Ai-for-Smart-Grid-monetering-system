@@ -201,7 +201,7 @@ def get_pending_training_records():
         SELECT * FROM readings 
         WHERE timestamp <= ? AND trained_on = 0 
         ORDER BY timestamp ASC
-    ''')
+    ''', (one_hour_ago,))
 
     rows = [dict(row) for row in cursor.fetchall()]
     conn.close()

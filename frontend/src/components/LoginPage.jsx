@@ -130,11 +130,11 @@ export default function LoginPage({ onConsumerLogin, onGovLogin }) {
 
   const [error, setError] = useState("");
 
-  const handleConsumerSubmit = (e) => {
+  const handleConsumerSubmit = async (e) => {
     e.preventDefault();
     setError("");
-    const result = onConsumerLogin(consumerId.trim(), phone.trim());
-    if (!result.ok) setError(result.message);
+    const result = await onConsumerLogin(consumerId.trim(), phone.trim());
+    if (result && !result.ok) setError(result.message);
   };
 
   const handleGovSubmit = async (e) => {

@@ -160,6 +160,25 @@ const statusColors = {
 };
 
 export default function ConsumerDashboard({ consumer, onLogout, onPay }) {
+  // Guard: If the backend hasn't returned consumer data yet, show a loading indicator
+  // instead of crashing on null property access.
+  if (!consumer) {
+    return (
+      <div style={styles.page}>
+        <div style={styles.topbar}>
+          <div style={styles.brand}>⚡ Consumer Dashboard</div>
+          <button style={styles.logoutBtn} onClick={onLogout}>Logout</button>
+        </div>
+        <div style={{ ...styles.container, textAlign: "center", paddingTop: "60px" }}>
+          <div style={{ fontSize: "18px", color: "#8a97a0" }}>Loading your dashboard...</div>
+          <div style={{ fontSize: "13px", color: "#a4aeb5", marginTop: "8px" }}>
+            If this persists, the backend may still be starting up. Please wait a moment.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Simulated live telemetry — nudges usage/solar values slightly every few
   // seconds to represent the Edge DPU streaming fresh readings.
   const [live, setLive] = useState({

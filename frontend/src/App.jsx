@@ -3,7 +3,9 @@ import LoginPage from "./components/LoginPage";
 import ConsumerDashboard from "./components/ConsumerDashboard";
 import GovernmentDashboard from "./components/GovernmentDashboard";
 
-const API_URL = "http://localhost:3000/api";
+// Uses the Vite proxy in development (see vite.config.js) to forward /api/* to the Express backend.
+// In production, this relative path works behind any reverse proxy (NGINX, etc.).
+const API_URL = "/api";
 
 export default function App() {
   const [view, setView] = useState("login"); // 'login' | 'consumer' | 'gov'
@@ -27,8 +29,12 @@ export default function App() {
     }
   };
 
+  // Load data from the backend on first render, then auto-refresh every 15 seconds
+  // so the dashboard stays in sync with the Edge DPU telemetry stream.
   useEffect(() => {
     loadData();
+    const interval = setInterval(loadData, 15000);
+    return () => clearInterval(interval);
   }, []);
 
   const handleConsumerLogin = async (consumerId, phone) => {
