@@ -29,6 +29,13 @@ const pool = new Pool({
 
 let pgConnected = false;
 
+/*
+ * BEGINNER EXPLANATION:
+ * This function connects to our PostgreSQL database. 
+ * If this is the very first time running the system, it will automatically create the tables 
+ * for transformers, consumers, and telemetry. It will also insert "dummy data" (like our demo users)
+ * so the frontend dashboard has something to display immediately!
+ */
 async function initDatabase() {
   let retries = 15;
   while (retries > 0) {
@@ -175,6 +182,13 @@ const producer = kafka.producer();
 const consumer = kafka.consumer({ groupId: 'grid-monitoring-group' });
 let kafkaConnected = false;
 
+/*
+ * BEGINNER EXPLANATION:
+ * Kafka is a high-speed message queue. Because thousands of transformers could be sending data 
+ * at the same time, we don't want the server to crash.
+ * Instead, they drop messages into a Kafka "topic", and our server reads them one-by-one here
+ * in a safe, controlled manner.
+ */
 async function initKafka() {
   try {
     await producer.connect();
@@ -249,6 +263,12 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'running', postgres: pgConnected, kafka: kafkaConnected });
 });
 
+/*
+ * BEGINNER EXPLANATION:
+ * When a user tries to log in on the React website, it sends a POST request here.
+ * We query the database to see if the consumer ID exists, and if the phone number matches.
+ * If it matches, we return the user's data so the dashboard can load.
+ */
 // -- AUTH ROUTES --
 app.post('/api/auth/consumer', async (req, res) => {
   const { consumerId, phone } = req.body;

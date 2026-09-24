@@ -83,9 +83,11 @@ def fetch_server_config():
 
 def run_online_learning():
     """
-    Self-Improving Feedback Loop:
-    Fetches predictions made >1 hour ago, compares them to the actual
-    readings that occurred at that targeted time, and updates the weights.
+    BEGINNER EXPLANATION:
+    This function is what makes the AI "smart" over time! 
+    Instead of sending all the data to the cloud to retrain the AI, the AI trains itself right here on the edge device.
+    It looks at predictions it made 1 hour ago, checks what the *actual* real-world values turned out to be, 
+    and uses the difference (the error) to mathematically adjust its internal weights so it doesn't make the same mistake again.
     """
     if not net_load_model or not solar_model or not scaler:
         return
@@ -211,6 +213,15 @@ def compute_rolling_features():
 
 
 def process_and_transmit():
+    """
+    BEGINNER EXPLANATION:
+    This is the main loop of the Edge DPU that runs forever.
+    1. It simulates reading environmental sensors (temperature, cloud cover, sunlight).
+    2. It reads the smart meters from the houses connected to this transformer.
+    3. It feeds that data into the local AI models to predict what the grid demand will look like in 1 hour.
+    4. If the predicted demand is too high, it sets a "CRITICAL_OVERLOAD_RISK" status.
+    5. Finally, it sends all this data to the local Substation relay.
+    """
     while True:
         now = datetime.datetime.now()
         hour = now.hour + now.minute / 60.0
