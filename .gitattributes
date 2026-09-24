@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Hide Windows batch scripts from GitHub language stats
+*.bat linguist-detectable=false
