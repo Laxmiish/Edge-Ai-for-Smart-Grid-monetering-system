@@ -1,68 +1,105 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import LoginPage from "./components/LoginPage";
 import ConsumerDashboard from "./components/ConsumerDashboard";
 import GovernmentDashboard from "./components/GovernmentDashboard";
-import { initialConsumers, initialTransformers } from "./data/mockData";
+
+const API_URL = "http://localhost:3000/api";
 
 export default function App() {
   const [view, setView] = useState("login"); // 'login' | 'consumer' | 'gov'
   const [activeConsumerId, setActiveConsumerId] = useState(null);
 
-  const [consumers, setConsumers] = useState(initialConsumers);
-  const [transformers, setTransformers] = useState(initialTransformers);
+  const [consumers, setConsumers] = useState([]);
+  const [transformers, setTransformers] = useState([]);
 
-  const handleConsumerLogin = (consumerId, phone) => {
-    const match = consumers.find(
-      (c) => c.consumerId.toLowerCase() === consumerId.toLowerCase()
-    );
-    if (!match) {
-      return { ok: false, message: "No consumer found with that Consumer ID." };
+  // Fetch data on load
+  const loadData = async () => {
+    try {
+      const conRes = await fetch(`${API_URL}/consumers`);
+      const conData = await conRes.json();
+      setConsumers(conData);
+
+      const trfRes = await fetch(`${API_URL}/transformers`);
+      const trfData = await trfRes.json();
+      setTransformers(trfData);
+    } catch (e) {
+      console.error("Failed to fetch data:", e);
     }
-    if (match.phone !== phone) {
-      return { ok: false, message: "Incorrect mobile number for this Consumer ID." };
-    }
-    setActiveConsumerId(match.consumerId);
-    setView("consumer");
-    return { ok: true };
   };
 
-  const handleGovLogin = () => setView("gov");
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const handleConsumerLogin = async (consumerId, phone) => {
+    try {
+      const res = await fetch(`${API_URL}/auth/consumer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ consumerId, phone })
+      });
+      const data = await res.json();
+      if (!data.ok) return { ok: false, message: data.message };
+      
+      setActiveConsumerId(consumerId);
+      setView("consumer");
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, message: "Network Error" };
+    }
+  };
+
+  const handleGovLogin = async (username, password) => {
+    try {
+      const res = await fetch(`${API_URL}/auth/gov`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password })
+      });
+      const data = await res.json();
+      if (!data.ok) return { ok: false, message: data.message };
+      
+      setView("gov");
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, message: "Network Error" };
+    }
+  };
 
   const handleLogout = () => {
     setActiveConsumerId(null);
     setView("login");
   };
 
-  const handlePay = () => {
-    setConsumers((prev) =>
-      prev.map((c) =>
-        c.consumerId === activeConsumerId ? { ...c, billStatus: "Paid" } : c
-      )
-    );
+  const handlePay = async () => {
+    try {
+      await fetch(`${API_URL}/consumers/${activeConsumerId}/pay`, { method: "POST" });
+      await loadData(); // Reload data after action
+    } catch (e) {
+      console.error("Payment failed", e);
+    }
   };
 
-  const handleToggleSolar = (transformerId) => {
-    setTransformers((prev) =>
-      prev.map((t) =>
-        t.transformerId === transformerId
-          ? { ...t, solarIntegrated: !t.solarIntegrated }
-          : t
-      )
-    );
+  const handleToggleSolar = async (transformerId) => {
+    try {
+      await fetch(`${API_URL}/transformers/${transformerId}/toggle-solar`, { method: "POST" });
+      await loadData();
+    } catch (e) {
+      console.error("Toggle failed", e);
+    }
   };
 
-  const handleAddSolarPlant = (transformerId, capacityKW) => {
-    setTransformers((prev) =>
-      prev.map((t) =>
-        t.transformerId === transformerId
-          ? {
-              ...t,
-              solarIntegrated: true,
-              solarCapacityKW: t.solarCapacityKW + capacityKW,
-            }
-          : t
-      )
-    );
+  const handleAddSolarPlant = async (transformerId, capacityKW) => {
+    try {
+      await fetch(`${API_URL}/transformers/${transformerId}/add-solar`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ capacityKW })
+      });
+      await loadData();
+    } catch (e) {
+      console.error("Add solar failed", e);
+    }
   };
 
   if (view === "login") {
@@ -72,7 +109,7 @@ export default function App() {
   }
 
   if (view === "consumer") {
-    const consumer = consumers.find((c) => c.consumerId === activeConsumerId);
+    const consumer = consumers.find((c) => c.consumerId.toLowerCase() === activeConsumerId?.toLowerCase());
     return (
       <ConsumerDashboard consumer={consumer} onLogout={handleLogout} onPay={handlePay} />
     );

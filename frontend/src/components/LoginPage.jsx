@@ -1,6 +1,4 @@
 import React, { useState } from "react";
-import { govCredentials } from "../data/mockData";
-
 const styles = {
   page: {
     minHeight: "100vh",
@@ -139,14 +137,11 @@ export default function LoginPage({ onConsumerLogin, onGovLogin }) {
     if (!result.ok) setError(result.message);
   };
 
-  const handleGovSubmit = (e) => {
+  const handleGovSubmit = async (e) => {
     e.preventDefault();
     setError("");
-    if (govUser === govCredentials.username && govPass === govCredentials.password) {
-      onGovLogin();
-    } else {
-      setError("Invalid government portal credentials.");
-    }
+    const result = await onGovLogin(govUser.trim(), govPass.trim());
+    if (result && !result.ok) setError(result.message);
   };
 
   return (

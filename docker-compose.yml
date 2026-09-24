@@ -3,7 +3,7 @@ version: '3.8'
 services:
   # 1. PostgreSQL Database
   postgres:
-    image: timescale/timescaledb:latest-pg15
+    image: postgres:15-alpine
     container_name: smart_grid_postgres
     environment:
       POSTGRES_DB: smart_grid
@@ -18,10 +18,8 @@ services:
 
   # 2. Zookeeper (Required for Kafka)
   zookeeper:
-    image: bitnami/zookeeper:latest
+    image: wurstmeister/zookeeper:latest
     container_name: smart_grid_zookeeper
-    environment:
-      - ALLOW_ANONYMOUS_LOGIN=yes
     ports:
       - "2181:2181"
     networks:
@@ -29,14 +27,12 @@ services:
 
   # 3. Kafka
   kafka:
-    image: bitnami/kafka:latest
+    image: wurstmeister/kafka:latest
     container_name: smart_grid_kafka
     environment:
-      - KAFKA_BROKER_ID=1
-      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
-      - ALLOW_PLAINTEXT_LISTENER=yes
-      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092
-      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092
     ports:
       - "9092:9092"
     depends_on:
@@ -89,7 +85,7 @@ services:
       - ./transformer_solar_model.pkl:/app/transformer_solar_model.pkl
       - ./model_feature_cols.pkl:/app/model_feature_cols.pkl
       # Persist the local sqlite cache on the host so it isn't lost on restart
-      - ./dpu_data:/app/dpu
+      - ./dpu_data:/app/dpu/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

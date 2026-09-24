@@ -7,7 +7,7 @@ COPY dpu/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Create volume for local_db to persist data
-VOLUME /app/dpu
+VOLUME /app/dpu/data
 
 # Copy source code
 COPY dpu /app/dpu

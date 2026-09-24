@@ -2,22 +2,6 @@
  * Smart Grid Central Backend Server
  * ==================================
  * Express.js server that acts as the Level 3 Cloud layer.
- * 
- * Services:
- *   1. PostgreSQL — Persistent storage for telemetry, house readings, and transformer config
- *   2. Apache Kafka — Stream processing for real-time meter readings
- *   3. REST API — Configuration, data ingestion, and query endpoints
- * 
- * Resilience:
- *   - Server starts even if Kafka or PostgreSQL are unavailable
- *   - Falls back gracefully (logs warnings, serves default config)
- * 
- * Endpoints:
- *   GET  /api/health                      — System health check
- *   GET  /api/config/:transformerId       — DPU config (solar capacity, lat/lon)
- *   POST /api/cloud/ingest                — Receive data from Substations
- *   GET  /api/telemetry/:transformerId    — Query telemetry history
- *   GET  /api/houses/:transformerId       — Query house-level readings
  */
 
 const express = require('express');
@@ -46,8 +30,10 @@ const pool = new Pool({
 let pgConnected = false;
 
 async function initDatabase() {
-  try {
-    const client = await pool.connect();
+  let retries = 15;
+  while (retries > 0) {
+    try {
+      const client = await pool.connect();
 
     // Create tables
     await client.query(`
@@ -57,9 +43,31 @@ async function initDatabase() {
         latitude DOUBLE PRECISION DEFAULT 26.8467,
         longitude DOUBLE PRECISION DEFAULT 80.9462,
         rated_capacity_kw DOUBLE PRECISION DEFAULT 45.0,
-        solar_capacity_kw DOUBLE PRECISION DEFAULT 5.0,
-        location_description TEXT DEFAULT 'Lucknow, India',
+        solar_capacity_kw DOUBLE PRECISION DEFAULT 0.0,
+        solar_integrated BOOLEAN DEFAULT false,
+        status VARCHAR(50) DEFAULT 'Healthy',
+        location_description TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS consumers (
+        id VARCHAR(50) PRIMARY KEY,
+        phone VARCHAR(20),
+        name VARCHAR(100),
+        address TEXT,
+        transformer_id VARCHAR(50) REFERENCES transformers(id),
+        category VARCHAR(50),
+        has_solar BOOLEAN,
+        current_usage_kw DOUBLE PRECISION,
+        solar_gen_kw DOUBLE PRECISION,
+        sanctioned_load_kw DOUBLE PRECISION,
+        bill_status VARCHAR(50),
+        current_bill DOUBLE PRECISION,
+        due_date DATE,
+        theft_flag BOOLEAN DEFAULT false,
+        billing_history JSONB DEFAULT '[]'::jsonb
       );
     `);
 
@@ -107,36 +115,50 @@ async function initDatabase() {
     // Enable TimescaleDB and create Hypertables for time-series data
     try {
       await client.query(`CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;`);
-      
-      await client.query(`
-        SELECT create_hypertable('telemetry', by_range('timestamp'), if_not_exists => TRUE);
-      `);
-      
-      await client.query(`
-        SELECT create_hypertable('house_readings', by_range('timestamp'), if_not_exists => TRUE);
-      `);
+      await client.query(`SELECT create_hypertable('telemetry', by_range('timestamp'), if_not_exists => TRUE);`);
+      await client.query(`SELECT create_hypertable('house_readings', by_range('timestamp'), if_not_exists => TRUE);`);
       console.log('[DB] TimescaleDB Hypertables created for telemetry and house_readings.');
     } catch (err) {
       console.log('[DB] Note: TimescaleDB extension not found or already configured. Standard tables will be used if hypertable creation failed.', err.message);
     }
 
-    // Seed default transformer config (DPUs will fetch this on startup)
+    // Seed Data
     await client.query(`
-      INSERT INTO transformers (id, name, latitude, longitude, rated_capacity_kw, solar_capacity_kw, location_description)
+      INSERT INTO transformers (id, name, latitude, longitude, rated_capacity_kw, solar_capacity_kw, solar_integrated, status, location_description)
       VALUES 
-        ('TX-LUCKNOW-BBD-01', 'BBD Transformer 01', 26.8467, 80.9462, 45.0, 5.0, 'BBD, Lucknow, UP, India')
+        ('TRF-A1', 'BBD Transformer 01', 26.8467, 80.9462, 100.0, 25.0, true, 'Healthy', 'Gomti Nagar Sector 4'),
+        ('TRF-A2', 'BBD Transformer 02', 26.8467, 80.9462, 63.0, 0.0, false, 'Healthy', 'Alambagh / Indira Nagar'),
+        ('TRF-B1', 'BBD Transformer 03', 26.8467, 80.9462, 500.0, 0.0, false, 'Watch', 'NER Railway Yard'),
+        ('TX-LUCKNOW-BBD-01', 'Default Edge Transformer', 26.8467, 80.9462, 45.0, 5.0, true, 'Healthy', 'Lucknow, UP, India')
       ON CONFLICT (id) DO NOTHING;
     `);
 
+    const consumersSeed = [
+      { id: 'BBDU-CN-1001', phone: '9876543210', name: 'Ramesh Verma', address: 'House 12, Gomti Nagar, Lucknow', t_id: 'TRF-A1', cat: 'Residential', solar: true, use: 3.2, gen: 1.8, sanc: 5, bStat: 'Due', bill: 1420, due: '2026-10-05', theft: false, hist: '[{"month": "Apr", "units": 210, "amount": 1260}]' },
+      { id: 'BBDU-CN-1002', phone: '9123456780', name: 'Sunita Textiles Pvt. Ltd.', address: 'Plot 4, Industrial Area, Lucknow', t_id: 'TRF-A1', cat: 'Industrial', solar: false, use: 42.5, gen: 0, sanc: 60, bStat: 'Paid', bill: 68500, due: '2026-09-28', theft: false, hist: '[{"month": "Apr", "units": 5200, "amount": 62400}]' },
+      { id: 'BBDU-CN-1003', phone: '9988776655', name: 'Anjali Sharma', address: 'Flat 302, Alambagh, Lucknow', t_id: 'TRF-A2', cat: 'Residential', solar: false, use: 1.4, gen: 0, sanc: 3, bStat: 'Overdue', bill: 890, due: '2026-09-10', theft: true, hist: '[{"month": "Apr", "units": 90, "amount": 540}]' },
+      { id: 'BBDU-CN-1004', phone: '9012345678', name: 'Railway Traction Sub-Station 7', address: 'NER Railway Yard, Lucknow', t_id: 'TRF-B1', cat: 'Railway Traction', solar: false, use: 310, gen: 0, sanc: 400, bStat: 'Paid', bill: 412000, due: '2026-09-30', theft: false, hist: '[{"month": "Apr", "units": 38000, "amount": 380000}]' },
+      { id: 'BBDU-CN-1005', phone: '9765432109', name: 'Vikram Singh', address: 'House 45, Indira Nagar, Lucknow', t_id: 'TRF-A2', cat: 'Residential', solar: true, use: 2.1, gen: 2.6, sanc: 4, bStat: 'Paid', bill: 640, due: '2026-09-25', theft: false, hist: '[{"month": "Apr", "units": 160, "amount": 960}]' }
+    ];
+
+    for(let c of consumersSeed) {
+      await client.query(`
+        INSERT INTO consumers (id, phone, name, address, transformer_id, category, has_solar, current_usage_kw, solar_gen_kw, sanctioned_load_kw, bill_status, current_bill, due_date, theft_flag, billing_history)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        ON CONFLICT (id) DO NOTHING;
+      `, [c.id, c.phone, c.name, c.address, c.t_id, c.cat, c.solar, c.use, c.gen, c.sanc, c.bStat, c.bill, c.due, c.theft, c.hist]);
+    }
+
     client.release();
     pgConnected = true;
-    console.log('[DB] PostgreSQL connected and tables initialized.');
+    console.log('[DB] PostgreSQL connected and tables seeded.');
+    break;
   } catch (err) {
-    console.error('[DB] PostgreSQL connection failed:', err.message);
-    console.log('[DB] Server will continue without database persistence.');
-    console.log('[DB] Make sure PostgreSQL is running and the "smart_grid" database exists.');
-    console.log('[DB] Create it with: CREATE DATABASE smart_grid;');
+    console.error(`[DB] PostgreSQL connection failed. Retrying... (${retries} attempts left)`);
+    retries -= 1;
+    await new Promise(res => setTimeout(res, 3000));
   }
+}
 }
 
 // ════════════════════════════════════════════════════════════
@@ -158,84 +180,45 @@ async function initKafka() {
     await producer.connect();
     kafkaConnected = true;
     console.log('[Kafka] Producer connected.');
-
-    // Start consumer in the background
     await consumer.connect();
     await consumer.subscribe({ topic: 'meter-readings', fromBeginning: false });
-
     await consumer.run({
       eachMessage: async ({ topic, partition, message }) => {
         try {
           const data = JSON.parse(message.value.toString());
-          console.log(`[Kafka] Consumed: ${data.transformer_id} from partition ${partition}`);
-
-          // Persist consumed messages to PostgreSQL
-          if (pgConnected) {
-            await saveTelemetry(data);
-          }
+          if (pgConnected) await saveTelemetry(data);
+          
+          // SKELETAL: Hook for Theft Detection Engine (Level 3 Logic)
+          runTheftDetectionEngine(data);
         } catch (e) {
-          console.error('[Kafka] Error processing message:', e.message);
+          console.error('[Kafka] Error:', e.message);
         }
       },
     });
-
-    console.log('[Kafka] Consumer listening on "meter-readings" topic.');
   } catch (err) {
-    console.error('[Kafka] Connection failed:', err.message);
     console.log('[Kafka] Server will continue without Kafka streaming.');
-    console.log('[Kafka] Data will be saved directly to PostgreSQL on ingestion.');
   }
 }
 
-// ════════════════════════════════════════════════════════════
-// Helper: Save Telemetry to PostgreSQL
-// ════════════════════════════════════════════════════════════
 async function saveTelemetry(data) {
   if (!pgConnected) return;
-
   try {
     const client = await pool.connect();
     const telemetry = data.transformer_telemetry || {};
     const analytics = data.edge_analytics || {};
 
-    // Insert telemetry record
     await client.query(`
-      INSERT INTO telemetry 
-      (transformer_id, timestamp, temperature_c, ambient_light_lux, cloud_cover,
-       gross_demand_kw, solar_gen_kw, net_load_kw, predicted_net_load_kw, 
-       predicted_solar_kw, status)
+      INSERT INTO telemetry (transformer_id, timestamp, temperature_c, ambient_light_lux, cloud_cover, gross_demand_kw, solar_gen_kw, net_load_kw, predicted_net_load_kw, predicted_solar_kw, status)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-    `, [
-      data.transformer_id,
-      data.timestamp,
-      telemetry.temperature_c || 0,
-      telemetry.ambient_light_lux || 0,
-      telemetry.cloud_cover || 0,
-      telemetry.gross_demand_kw || telemetry.aggregated_demand_kw || 0,
-      telemetry.solar_gen_kw || 0,
-      telemetry.net_load_kw || 0,
-      analytics.predicted_net_load_1h_kw || analytics.predicted_net_load_kw || 0,
-      analytics.predicted_solar_1h_kw || 0,
-      analytics.status || 'UNKNOWN',
-    ]);
+    `, [data.transformer_id, data.timestamp, telemetry.temperature_c||0, telemetry.ambient_light_lux||0, telemetry.cloud_cover||0, telemetry.gross_demand_kw||0, telemetry.solar_gen_kw||0, telemetry.net_load_kw||0, analytics.predicted_net_load_1h_kw||0, analytics.predicted_solar_1h_kw||0, analytics.status||'UNKNOWN']);
 
-    // Insert individual house readings
     const houses = data.house_data || [];
     for (const house of houses) {
       await client.query(`
-        INSERT INTO house_readings 
-        (house_id, transformer_id, timestamp, raw_demand_kw, solar_gen_kw, net_demand_kw)
+        INSERT INTO house_readings (house_id, transformer_id, timestamp, raw_demand_kw, solar_gen_kw, net_demand_kw)
         VALUES ($1, $2, $3, $4, $5, $6)
-      `, [
-        house.house_id,
-        data.transformer_id,
-        data.timestamp,
-        house.raw_demand_kw || 0,
-        house.solar_gen_kw || 0,
-        house.net_demand_kw || 0,
-      ]);
+      `, [house.house_id, data.transformer_id, data.timestamp, house.raw_demand_kw||0, house.solar_gen_kw||0, house.net_demand_kw||0]);
     }
-
     client.release();
   } catch (err) {
     console.error('[DB] Error saving telemetry:', err.message);
@@ -243,205 +226,141 @@ async function saveTelemetry(data) {
 }
 
 // ════════════════════════════════════════════════════════════
-// API ROUTES
+// TODO: LEVEL 3 BUSINESS LOGIC (Skeletal Framework)
+// ════════════════════════════════════════════════════════════
+function runTheftDetectionEngine(data) {
+  // 1. Rule-Based Theft Detection Engine (PENDING)
+  // Will analyze house_readings against total transformer output 
+  // to mathematically identify unmetered electricity theft.
+}
+
+async function runAutomatedSmartBilling(consumerId, amountPaid) {
+  // 2. Automated Smart Billing Pipeline (PENDING)
+  // Will calculate dynamic commercial tariffs based on net_demand_kw,
+  // handle partial payments, and update billing histories.
+}
+
+
+// ════════════════════════════════════════════════════════════
+// API ROUTES (Frontend Integration)
 // ════════════════════════════════════════════════════════════
 
-// Health check
 app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'running',
-    postgres: pgConnected ? 'connected' : 'disconnected',
-    kafka: kafkaConnected ? 'connected' : 'disconnected',
-    uptime_seconds: Math.floor(process.uptime()),
-  });
+  res.json({ status: 'running', postgres: pgConnected, kafka: kafkaConnected });
 });
 
-// ── GET /api/config/:transformerId ──────────────────────────
-// Returns configuration (solar capacity, geological data) for a DPU.
-// The DPU calls this endpoint on startup.
+// -- AUTH ROUTES --
+app.post('/api/auth/consumer', async (req, res) => {
+  const { consumerId, phone } = req.body;
+  if (!pgConnected) return res.status(503).json({ ok: false, message: 'Database is still starting up. Please wait 5 seconds and try again.' });
+  const result = await pool.query('SELECT * FROM consumers WHERE id = $1', [consumerId]);
+  if (result.rows.length === 0) return res.status(401).json({ ok: false, message: "No consumer found." });
+  if (result.rows[0].phone !== phone) return res.status(401).json({ ok: false, message: "Incorrect mobile number." });
+  res.json({ ok: true, consumer: mapConsumerDBtoFrontend(result.rows[0]) });
+});
+
+app.post('/api/auth/gov', (req, res) => {
+  const { username, password } = req.body;
+  if (username === 'admin' && password === 'grid@2026') return res.json({ ok: true });
+  res.status(401).json({ ok: false, message: "Invalid credentials" });
+});
+
+// -- CONSUMERS ROUTES --
+app.get('/api/consumers', async (req, res) => {
+  if (!pgConnected) return res.status(503).json([]);
+  const result = await pool.query('SELECT * FROM consumers');
+  res.json(result.rows.map(mapConsumerDBtoFrontend));
+});
+
+app.post('/api/consumers/:id/pay', async (req, res) => {
+  const { id } = req.params;
+  if (!pgConnected) return res.status(503).json({ error: 'DB down' });
+  await pool.query('UPDATE consumers SET bill_status = $1 WHERE id = $2', ['Paid', id]);
+  await runAutomatedSmartBilling(id, req.body.amount);
+  res.json({ ok: true });
+});
+
+// -- TRANSFORMERS ROUTES --
+app.get('/api/transformers', async (req, res) => {
+  if (!pgConnected) return res.status(503).json([]);
+  const result = await pool.query('SELECT * FROM transformers');
+  res.json(result.rows.map(mapTransformerDBtoFrontend));
+});
+
+app.post('/api/transformers/:id/toggle-solar', async (req, res) => {
+  const { id } = req.params;
+  if (!pgConnected) return res.status(503).json({ error: 'DB down' });
+  await pool.query('UPDATE transformers SET solar_integrated = NOT solar_integrated WHERE id = $1', [id]);
+  res.json({ ok: true });
+});
+
+app.post('/api/transformers/:id/add-solar', async (req, res) => {
+  const { id } = req.params;
+  const { capacityKW } = req.body;
+  if (!pgConnected) return res.status(503).json({ error: 'DB down' });
+  await pool.query('UPDATE transformers SET solar_integrated = true, solar_capacity_kw = solar_capacity_kw + $1 WHERE id = $2', [capacityKW, id]);
+  res.json({ ok: true });
+});
+
+// -- DPU/SUBSTATION DATA ROUTES --
 app.get('/api/config/:transformerId', async (req, res) => {
+  // Exists for DPU
   const { transformerId } = req.params;
-
-  if (pgConnected) {
-    try {
-      const result = await pool.query(
-        'SELECT * FROM transformers WHERE id = $1', [transformerId]
-      );
-
-      if (result.rows.length > 0) {
-        const t = result.rows[0];
-        return res.json({
-          transformer_id: t.id,
-          name: t.name,
-          latitude: t.latitude,
-          longitude: t.longitude,
-          rated_capacity_kw: t.rated_capacity_kw,
-          solar_capacity_kw: t.solar_capacity_kw,
-          location_description: t.location_description,
-        });
-      }
-    } catch (err) {
-      console.error('[API] Config query error:', err.message);
-    }
-  }
-
-  // Fallback defaults (returned even if PostgreSQL is down)
-  res.json({
-    transformer_id: transformerId,
-    name: 'Default Transformer',
-    latitude: 26.8467,
-    longitude: 80.9462,
-    rated_capacity_kw: 45.0,
-    solar_capacity_kw: 5.0,
-    location_description: 'Lucknow, India (default)',
-  });
+  if (!pgConnected) return res.json({ transformer_id: transformerId, solar_capacity_kw: 5.0 });
+  const result = await pool.query('SELECT * FROM transformers WHERE id = $1', [transformerId]);
+  if (result.rows.length > 0) return res.json(result.rows[0]);
+  res.json({ transformer_id: transformerId, solar_capacity_kw: 5.0 });
 });
 
-// ── POST /api/cloud/ingest ──────────────────────────────────
-// Receives data forwarded by the Substation relay.
 app.post('/api/cloud/ingest', async (req, res) => {
   const data = req.body;
-
-  if (!data || !data.transformer_id) {
-    return res.status(400).json({ error: 'Invalid payload: missing transformer_id' });
-  }
-
-  const status = (data.edge_analytics || {}).status || '?';
-  console.log(`[API] ← Ingested: ${data.transformer_id} | ${data.timestamp} | ${status}`);
-
-  // Publish to Kafka if connected
   if (kafkaConnected) {
-    try {
-      await producer.send({
-        topic: 'meter-readings',
-        messages: [{
-          key: data.transformer_id,
-          value: JSON.stringify(data),
-        }],
-      });
-    } catch (err) {
-      console.error('[Kafka] Publish error:', err.message);
-    }
+    try { await producer.send({ topic: 'meter-readings', messages: [{ key: data.transformer_id, value: JSON.stringify(data) }] }); } catch (e) {}
   }
-
-  // Save directly to PostgreSQL (guaranteed persistence even without Kafka)
-  if (pgConnected) {
-    await saveTelemetry(data);
-  }
-
-  res.json({
-    status: 'ingested',
-    transformer_id: data.transformer_id,
-    kafka: kafkaConnected ? 'published' : 'skipped',
-    postgres: pgConnected ? 'saved' : 'skipped',
-  });
+  if (pgConnected) await saveTelemetry(data);
+  res.json({ status: 'ingested' });
 });
 
-// ── GET /api/telemetry/:transformerId ───────────────────────
-// Query recent telemetry for a transformer.
-app.get('/api/telemetry/:transformerId', async (req, res) => {
-// ... existing telemetry logic ...
+// -- HELPERS --
+function mapConsumerDBtoFrontend(dbObj) {
+  return {
+    consumerId: dbObj.id,
+    phone: dbObj.phone,
+    name: dbObj.name,
+    address: dbObj.address,
+    transformerId: dbObj.transformer_id,
+    category: dbObj.category,
+    hasSolar: dbObj.has_solar,
+    currentUsageKW: dbObj.current_usage_kw,
+    solarGenKW: dbObj.solar_gen_kw,
+    sanctionedLoadKW: dbObj.sanctioned_load_kw,
+    billStatus: dbObj.bill_status,
+    currentBill: dbObj.current_bill,
+    dueDate: dbObj.due_date,
+    theftFlag: dbObj.theft_flag,
+    billingHistory: dbObj.billing_history
+  };
+}
 
-  const { transformerId } = req.params;
-  const limit = parseInt(req.query.limit) || 100;
-
-  if (!pgConnected) {
-    return res.status(503).json({ error: 'Database not available' });
-  }
-
-  try {
-    const result = await pool.query(`
-      SELECT * FROM telemetry 
-      WHERE transformer_id = $1 
-      ORDER BY timestamp DESC 
-      LIMIT $2
-    `, [transformerId, limit]);
-
-    res.json({
-      transformer_id: transformerId,
-      count: result.rows.length,
-      readings: result.rows,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── GET /api/houses/:transformerId ──────────────────────────
-// Query recent house-level readings.
-app.get('/api/houses/:transformerId', async (req, res) => {
-  const { transformerId } = req.params;
-  const limit = parseInt(req.query.limit) || 100;
-
-  if (!pgConnected) {
-    return res.status(503).json({ error: 'Database not available' });
-  }
-
-  try {
-    const result = await pool.query(`
-      SELECT * FROM house_readings 
-      WHERE transformer_id = $1 
-      ORDER BY timestamp DESC 
-      LIMIT $2
-    `, [transformerId, limit]);
-
-    res.json({
-      transformer_id: transformerId,
-      count: result.rows.length,
-      readings: result.rows,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ════════════════════════════════════════════════════════════
-// TODO: LEVEL 3 BUSINESS LOGIC (As per Project Synopsis)
-// ════════════════════════════════════════════════════════════
-
-/**
- * 1. Rule-Based Theft Detection Engine (PENDING)
- * Will analyze house_readings against total transformer output 
- * to mathematically identify unmetered electricity theft.
- */
-
-/**
- * 2. Automated Smart Billing Pipeline (PENDING)
- * Will calculate dynamic commercial tariffs based on net_demand_kw,
- * eliminating manual meter reading errors.
- */
-
-/**
- * 3. Fault Detection & Grid Diagnostics (PENDING)
- * Will trigger Level 4 Dashboard alerts based on 'CRITICAL_OVERLOAD_RISK'
- * and temperature spikes.
- */
+function mapTransformerDBtoFrontend(dbObj) {
+  return {
+    transformerId: dbObj.id,
+    location: dbObj.location_description,
+    ratedCapacityKW: dbObj.rated_capacity_kw,
+    solarIntegrated: dbObj.solar_integrated,
+    solarCapacityKW: dbObj.solar_capacity_kw,
+    status: dbObj.status
+  };
+}
 
 // ════════════════════════════════════════════════════════════
 // START SERVER
 // ════════════════════════════════════════════════════════════
 async function startServer() {
-  // Initialize services (non-blocking — server starts even if they fail)
   await initDatabase();
   await initKafka();
-
   app.listen(PORT, () => {
-    console.log('');
-    console.log('='.repeat(60));
-    console.log('  Smart Grid Central Backend');
-    console.log(`  http://localhost:${PORT}`);
-    console.log('');
-    console.log(`  PostgreSQL : ${pgConnected ? '✓ Connected' : '✗ Disconnected'}`);
-    console.log(`  Kafka      : ${kafkaConnected ? '✓ Connected' : '✗ Disconnected'}`);
-    console.log('='.repeat(60));
-    console.log('');
-    console.log('  Endpoints:');
-    console.log(`    GET  /api/health`);
-    console.log(`    GET  /api/config/:id`);
-    console.log(`    POST /api/cloud/ingest`);
-    console.log(`    GET  /api/telemetry/:id`);
-    console.log(`    GET  /api/houses/:id`);
-    console.log('');
+    console.log(`[Server] Smart Grid Central Backend on port ${PORT}`);
   });
 }
 
