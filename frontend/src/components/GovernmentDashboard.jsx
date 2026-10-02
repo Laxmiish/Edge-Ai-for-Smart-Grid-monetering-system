@@ -39,6 +39,17 @@ const styles = {
     fontSize: "13px",
     cursor: "pointer",
   }),
+  tabCount: (active) => ({
+    display: "inline-block",
+    marginLeft: "8px",
+    minWidth: "20px",
+    padding: "1px 7px",
+    borderRadius: "10px",
+    fontSize: "11px",
+    textAlign: "center",
+    background: active ? "rgba(255,255,255,0.28)" : "#e74c3c",
+    color: "#fff",
+  }),
   grid: {
     display: "grid",
     gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
@@ -68,6 +79,15 @@ const styles = {
     color: "#1b2b34",
     marginBottom: "16px",
   },
+  sectionHeaderRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: "10px",
+    marginBottom: "16px",
+  },
+  tableWrap: { overflowX: "auto" },
   table: { width: "100%", borderCollapse: "collapse" },
   th: {
     textAlign: "left",
@@ -83,6 +103,7 @@ const styles = {
     padding: "10px 8px",
     borderBottom: "1px solid #f1f3f4",
     whiteSpace: "nowrap",
+    verticalAlign: "middle",
   },
   pill: (color) => ({
     display: "inline-block",
@@ -94,12 +115,17 @@ const styles = {
     background: color,
   }),
   toggleWrap: { display: "flex", alignItems: "center", gap: "8px" },
+  // Toggle: flex use kiya hai taaki knob kabhi vertically idhar-udhar na jaye
   toggle: (on) => ({
     width: "42px",
     height: "22px",
     borderRadius: "20px",
     background: on ? "#16a085" : "#ccd3d6",
-    position: "relative",
+    display: "flex",
+    alignItems: "center",
+    padding: "2px",
+    boxSizing: "border-box",
+    border: "none",
     cursor: "pointer",
     transition: "background 0.2s ease",
     flexShrink: 0,
@@ -109,10 +135,8 @@ const styles = {
     height: "18px",
     borderRadius: "50%",
     background: "#fff",
-    position: "absolute",
-    top: "2px",
-    left: on ? "22px" : "2px",
-    transition: "left 0.2s ease",
+    transform: on ? "translateX(20px)" : "translateX(0)",
+    transition: "transform 0.2s ease",
     boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
   }),
   formRow: {
@@ -154,6 +178,50 @@ const styles = {
     flexWrap: "wrap",
     gap: "8px",
   }),
+  alertActions: { display: "flex", alignItems: "center", gap: "10px", flexShrink: 0 },
+  resolveBtn: {
+    background: "#fff",
+    color: "#0e7c5a",
+    border: "1.5px solid #16a085",
+    padding: "5px 12px",
+    borderRadius: "6px",
+    fontWeight: 700,
+    fontSize: "12px",
+    cursor: "pointer",
+  },
+  resolvedItem: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "12px 14px",
+    borderRadius: "8px",
+    marginBottom: "8px",
+    background: "#f4f7f8",
+    border: "1px solid #e3e9ec",
+    fontSize: "13px",
+    color: "#7a8a94",
+    flexWrap: "wrap",
+    gap: "8px",
+  },
+  reopenBtn: {
+    background: "transparent",
+    color: "#4a5760",
+    border: "1.5px solid #cfd8dc",
+    padding: "5px 12px",
+    borderRadius: "6px",
+    fontWeight: 700,
+    fontSize: "12px",
+    cursor: "pointer",
+  },
+  linkBtn: {
+    background: "transparent",
+    border: "none",
+    color: "#16a085",
+    fontWeight: 700,
+    fontSize: "12.5px",
+    cursor: "pointer",
+    padding: 0,
+  },
   successMsg: {
     background: "#eafaf3",
     border: "1px solid #b7ecd6",
@@ -169,6 +237,9 @@ const styles = {
 const billBadge = { Paid: "#2ecc71", Due: "#f39c12", Overdue: "#e74c3c" };
 const statusBadge = { Healthy: "#2ecc71", Watch: "#f39c12", Critical: "#e74c3c" };
 
+const formatTime = (ts) =>
+  new Date(ts).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+
 export default function GovernmentDashboard({
   consumers,
   transformers,
@@ -182,6 +253,23 @@ export default function GovernmentDashboard({
     capacity: "",
   });
   const [msg, setMsg] = useState("");
+
+  // Resolved alerts: { [alertId]: timestamp }
+  const [resolved, setResolved] = useState({});
+  const [showResolved, setShowResolved] = useState(false);
+
+  // Transformers ko hamesha ID ke hisaab se fixed order mein dikhate hain.
+  // Isse parent array ka order badle (jaise toggle ke baad row end mein push ho)
+  // tab bhi table mein row apni jagah par hi rahegi.
+  const sortedTransformers = useMemo(
+    () =>
+      [...transformers].sort((a, b) =>
+        String(a.transformerId).localeCompare(String(b.transformerId), undefined, {
+          numeric: true,
+        })
+      ),
+    [transformers]
+  );
 
   // simulated live grid load nudges
   const [liveLoads, setLiveLoads] = useState({});
@@ -213,9 +301,91 @@ export default function GovernmentDashboard({
     () => consumers.reduce((s, c) => s + c.solarGenKW, 0),
     [consumers]
   );
-  const theftCount = consumers.filter((c) => c.theftFlag).length;
-  const overdueCount = consumers.filter((c) => c.billStatus === "Overdue").length;
   const solarTransformers = transformers.filter((t) => t.solarIntegrated).length;
+
+  // ---- Saare alerts ek list mein (har alert ki unique id ke saath) ----
+  const allAlerts = useMemo(() => {
+    const list = [];
+
+    consumers
+      .filter((c) => c.theftFlag)
+      .forEach((c) =>
+        list.push({
+          id: `theft-${c.consumerId}`,
+          type: "theft",
+          level: "high",
+          pillColor: "#e74c3c",
+          pillText: "High",
+          body: (
+            <>
+              ⚠ <b>Possible theft/tamper</b> — {c.name} ({c.consumerId}) on{" "}
+              {c.transformerId}: consumption spiked to 300 units in August, well
+              above baseline.
+            </>
+          ),
+        })
+      );
+
+    consumers
+      .filter((c) => c.billStatus === "Overdue")
+      .forEach((c) =>
+        list.push({
+          id: `bill-${c.consumerId}`,
+          type: "overdue",
+          level: "medium",
+          pillColor: "#f39c12",
+          pillText: "Medium",
+          body: (
+            <>
+              💰 <b>Overdue payment</b> — {c.name} ({c.consumerId}): ₹
+              {c.currentBill.toLocaleString("en-IN")} overdue since {c.dueDate}.
+            </>
+          ),
+        })
+      );
+
+    sortedTransformers
+      .filter((t) => t.status !== "Healthy")
+      .forEach((t) =>
+        list.push({
+          id: `trf-${t.transformerId}`,
+          type: "transformer",
+          level: "medium",
+          pillColor: "#f39c12",
+          pillText: "Watch",
+          body: (
+            <>
+              🔧 <b>Transformer watch</b> — {t.transformerId} ({t.location}) load
+              trending high, recommend inspection.
+            </>
+          ),
+        })
+      );
+
+    return list;
+  }, [consumers, sortedTransformers]);
+
+  const activeAlerts = allAlerts.filter((a) => !resolved[a.id]);
+  const resolvedAlerts = allAlerts
+    .filter((a) => resolved[a.id])
+    .sort((a, b) => resolved[b.id] - resolved[a.id]);
+
+  // Overview card ke counts (sirf unresolved)
+  const theftCount = activeAlerts.filter((a) => a.type === "theft").length;
+  const overdueCount = activeAlerts.filter((a) => a.type === "overdue").length;
+  const transformerAlertCount = activeAlerts.filter((a) => a.type === "transformer").length;
+
+  const resolveAlert = (id) => setResolved((prev) => ({ ...prev, [id]: Date.now() }));
+  const reopenAlert = (id) =>
+    setResolved((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  const clearResolved = () => {
+    setResolved({});
+    setShowResolved(false);
+  };
 
   const handleAddSolar = (e) => {
     e.preventDefault();
@@ -250,6 +420,9 @@ export default function GovernmentDashboard({
           </button>
           <button style={styles.tabBtn(tab === "alerts")} onClick={() => setTab("alerts")}>
             Alerts
+            {activeAlerts.length > 0 && (
+              <span style={styles.tabCount(tab === "alerts")}>{activeAlerts.length}</span>
+            )}
           </button>
         </div>
 
@@ -273,45 +446,48 @@ export default function GovernmentDashboard({
               </div>
               <div style={{ ...styles.statCard, borderLeftColor: "#e74c3c" }}>
                 <div style={styles.statLabel}>Active Alerts</div>
-                <div style={styles.statValue}>{theftCount + overdueCount}</div>
+                <div style={styles.statValue}>{activeAlerts.length}</div>
                 <div style={styles.statSub}>
-                  {theftCount} theft flags · {overdueCount} overdue bills
+                  {theftCount} theft flags · {overdueCount} overdue bills ·{" "}
+                  {transformerAlertCount} transformer watch
                 </div>
               </div>
             </div>
 
             <div style={styles.section}>
               <div style={styles.sectionTitle}>Live Load by Transformer</div>
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    <th style={styles.th}>Transformer</th>
-                    <th style={styles.th}>Location</th>
-                    <th style={styles.th}>Live Net Load</th>
-                    <th style={styles.th}>Rated Capacity</th>
-                    <th style={styles.th}>Load %</th>
-                    <th style={styles.th}>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {transformers.map((t) => {
-                    const load = liveLoads[t.transformerId] ?? 0;
-                    const pct = Math.min(100, (load / t.ratedCapacityKW) * 100);
-                    return (
-                      <tr key={t.transformerId}>
-                        <td style={styles.td}>{t.transformerId}</td>
-                        <td style={styles.td}>{t.location}</td>
-                        <td style={styles.td}>{load.toFixed(1)} kW</td>
-                        <td style={styles.td}>{t.ratedCapacityKW} kW</td>
-                        <td style={styles.td}>{pct.toFixed(0)}%</td>
-                        <td style={styles.td}>
-                          <span style={styles.pill(statusBadge[t.status])}>{t.status}</span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <div style={styles.tableWrap}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>Transformer</th>
+                      <th style={styles.th}>Location</th>
+                      <th style={styles.th}>Live Net Load</th>
+                      <th style={styles.th}>Rated Capacity</th>
+                      <th style={styles.th}>Load %</th>
+                      <th style={styles.th}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedTransformers.map((t) => {
+                      const load = liveLoads[t.transformerId] ?? 0;
+                      const pct = Math.min(100, (load / t.ratedCapacityKW) * 100);
+                      return (
+                        <tr key={t.transformerId}>
+                          <td style={styles.td}>{t.transformerId}</td>
+                          <td style={styles.td}>{t.location}</td>
+                          <td style={styles.td}>{load.toFixed(1)} kW</td>
+                          <td style={styles.td}>{t.ratedCapacityKW} kW</td>
+                          <td style={styles.td}>{pct.toFixed(0)}%</td>
+                          <td style={styles.td}>
+                            <span style={styles.pill(statusBadge[t.status])}>{t.status}</span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </>
         )}
@@ -332,7 +508,7 @@ export default function GovernmentDashboard({
                       required
                     >
                       <option value="">Select transformer</option>
-                      {transformers.map((t) => (
+                      {sortedTransformers.map((t) => (
                         <option key={t.transformerId} value={t.transformerId}>
                           {t.transformerId} — {t.location}
                         </option>
@@ -360,38 +536,44 @@ export default function GovernmentDashboard({
 
             <div style={styles.section}>
               <div style={styles.sectionTitle}>Transformer Solar Status</div>
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    <th style={styles.th}>Transformer</th>
-                    <th style={styles.th}>Location</th>
-                    <th style={styles.th}>Solar Capacity</th>
-                    <th style={styles.th}>Solar Integrated</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {transformers.map((t) => (
-                    <tr key={t.transformerId}>
-                      <td style={styles.td}>{t.transformerId}</td>
-                      <td style={styles.td}>{t.location}</td>
-                      <td style={styles.td}>{t.solarCapacityKW} kW</td>
-                      <td style={styles.td}>
-                        <div style={styles.toggleWrap}>
-                          <div
-                            style={styles.toggle(t.solarIntegrated)}
-                            onClick={() => onToggleSolar(t.transformerId)}
-                          >
-                            <div style={styles.knob(t.solarIntegrated)}></div>
-                          </div>
-                          <span style={{ fontSize: "12.5px", color: "#8a97a0" }}>
-                            {t.solarIntegrated ? "Enabled" : "Disabled"}
-                          </span>
-                        </div>
-                      </td>
+              <div style={styles.tableWrap}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>Transformer</th>
+                      <th style={styles.th}>Location</th>
+                      <th style={styles.th}>Solar Capacity</th>
+                      <th style={styles.th}>Solar Integrated</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {sortedTransformers.map((t) => (
+                      <tr key={t.transformerId}>
+                        <td style={styles.td}>{t.transformerId}</td>
+                        <td style={styles.td}>{t.location}</td>
+                        <td style={styles.td}>{t.solarCapacityKW} kW</td>
+                        <td style={styles.td}>
+                          <div style={styles.toggleWrap}>
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={!!t.solarIntegrated}
+                              aria-label={`Solar integration for ${t.transformerId}`}
+                              style={styles.toggle(t.solarIntegrated)}
+                              onClick={() => onToggleSolar(t.transformerId)}
+                            >
+                              <div style={styles.knob(t.solarIntegrated)}></div>
+                            </button>
+                            <span style={{ fontSize: "12.5px", color: "#8a97a0" }}>
+                              {t.solarIntegrated ? "Enabled" : "Disabled"}
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </>
         )}
@@ -399,80 +581,118 @@ export default function GovernmentDashboard({
         {tab === "consumers" && (
           <div style={styles.section}>
             <div style={styles.sectionTitle}>All Consumers</div>
-            <table style={styles.table}>
-              <thead>
-                <tr>
-                  <th style={styles.th}>Consumer ID</th>
-                  <th style={styles.th}>Name</th>
-                  <th style={styles.th}>Category</th>
-                  <th style={styles.th}>Transformer</th>
-                  <th style={styles.th}>Usage</th>
-                  <th style={styles.th}>Solar</th>
-                  <th style={styles.th}>Bill</th>
-                  <th style={styles.th}>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {consumers.map((c) => (
-                  <tr key={c.consumerId}>
-                    <td style={styles.td}>{c.consumerId}</td>
-                    <td style={styles.td}>{c.name}</td>
-                    <td style={styles.td}>{c.category}</td>
-                    <td style={styles.td}>{c.transformerId}</td>
-                    <td style={styles.td}>{c.currentUsageKW} kW</td>
-                    <td style={styles.td}>{c.hasSolar ? `${c.solarGenKW} kW` : "—"}</td>
-                    <td style={styles.td}>₹{c.currentBill.toLocaleString("en-IN")}</td>
-                    <td style={styles.td}>
-                      <span style={styles.pill(billBadge[c.billStatus])}>{c.billStatus}</span>
-                    </td>
+            <div style={styles.tableWrap}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Consumer ID</th>
+                    <th style={styles.th}>Name</th>
+                    <th style={styles.th}>Category</th>
+                    <th style={styles.th}>Transformer</th>
+                    <th style={styles.th}>Usage</th>
+                    <th style={styles.th}>Solar</th>
+                    <th style={styles.th}>Bill</th>
+                    <th style={styles.th}>Status</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {consumers.map((c) => (
+                    <tr key={c.consumerId}>
+                      <td style={styles.td}>{c.consumerId}</td>
+                      <td style={styles.td}>{c.name}</td>
+                      <td style={styles.td}>{c.category}</td>
+                      <td style={styles.td}>{c.transformerId}</td>
+                      <td style={styles.td}>{c.currentUsageKW} kW</td>
+                      <td style={styles.td}>{c.hasSolar ? `${c.solarGenKW} kW` : "—"}</td>
+                      <td style={styles.td}>₹{c.currentBill.toLocaleString("en-IN")}</td>
+                      <td style={styles.td}>
+                        <span style={styles.pill(billBadge[c.billStatus])}>{c.billStatus}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
 
         {tab === "alerts" && (
-          <div style={styles.section}>
-            <div style={styles.sectionTitle}>Theft &amp; Billing Alerts</div>
-            {consumers.filter((c) => c.theftFlag || c.billStatus === "Overdue").length === 0 && (
-              <div style={{ fontSize: "13.5px", color: "#8a97a0" }}>No active alerts.</div>
+          <>
+            <div style={styles.section}>
+              <div style={styles.sectionTitle}>
+                Theft &amp; Billing Alerts ({activeAlerts.length})
+              </div>
+
+              {activeAlerts.length === 0 && (
+                <div style={{ fontSize: "13.5px", color: "#8a97a0" }}>
+                  {allAlerts.length === 0
+                    ? "No active alerts."
+                    : "Sab alerts resolve ho chuke hain. Koi active alert nahi hai."}
+                </div>
+              )}
+
+              {activeAlerts.map((a) => (
+                <div style={styles.alertItem(a.level)} key={a.id}>
+                  <span style={{ flex: 1, minWidth: "220px" }}>{a.body}</span>
+                  <div style={styles.alertActions}>
+                    <span style={styles.pill(a.pillColor)}>{a.pillText}</span>
+                    <button
+                      type="button"
+                      style={styles.resolveBtn}
+                      onClick={() => resolveAlert(a.id)}
+                      title="Action le liya gaya hai — alert ko resolved mark karo"
+                    >
+                      ✓ Mark Resolved
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {resolvedAlerts.length > 0 && (
+              <div style={styles.section}>
+                <div style={styles.sectionHeaderRow}>
+                  <div style={{ ...styles.sectionTitle, marginBottom: 0 }}>
+                    Resolved Alerts ({resolvedAlerts.length})
+                  </div>
+                  <div style={{ display: "flex", gap: "16px" }}>
+                    <button
+                      type="button"
+                      style={styles.linkBtn}
+                      onClick={() => setShowResolved((s) => !s)}
+                    >
+                      {showResolved ? "Hide" : "Show"}
+                    </button>
+                    <button type="button" style={styles.linkBtn} onClick={clearResolved}>
+                      Clear all
+                    </button>
+                  </div>
+                </div>
+
+                {showResolved &&
+                  resolvedAlerts.map((a) => (
+                    <div style={styles.resolvedItem} key={a.id}>
+                      <span style={{ flex: 1, minWidth: "220px" }}>
+                        {a.body}
+                        <div style={{ fontSize: "11.5px", marginTop: "4px", color: "#a4aeb5" }}>
+                          Resolved on {formatTime(resolved[a.id])}
+                        </div>
+                      </span>
+                      <div style={styles.alertActions}>
+                        <span style={styles.pill("#2ecc71")}>Resolved</span>
+                        <button
+                          type="button"
+                          style={styles.reopenBtn}
+                          onClick={() => reopenAlert(a.id)}
+                        >
+                          Reopen
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+              </div>
             )}
-            {consumers
-              .filter((c) => c.theftFlag)
-              .map((c) => (
-                <div style={styles.alertItem("high")} key={`theft-${c.consumerId}`}>
-                  <span>
-                    ⚠ <b>Possible theft/tamper</b> — {c.name} ({c.consumerId}) on{" "}
-                    {c.transformerId}: consumption spiked to 300 units in August, well
-                    above baseline.
-                  </span>
-                  <span style={styles.pill("#e74c3c")}>High</span>
-                </div>
-              ))}
-            {consumers
-              .filter((c) => c.billStatus === "Overdue")
-              .map((c) => (
-                <div style={styles.alertItem("medium")} key={`bill-${c.consumerId}`}>
-                  <span>
-                    💰 <b>Overdue payment</b> — {c.name} ({c.consumerId}): ₹
-                    {c.currentBill.toLocaleString("en-IN")} overdue since {c.dueDate}.
-                  </span>
-                  <span style={styles.pill("#f39c12")}>Medium</span>
-                </div>
-              ))}
-            {transformers
-              .filter((t) => t.status !== "Healthy")
-              .map((t) => (
-                <div style={styles.alertItem("medium")} key={`trf-${t.transformerId}`}>
-                  <span>
-                    🔧 <b>Transformer watch</b> — {t.transformerId} ({t.location}) load
-                    trending high, recommend inspection.
-                  </span>
-                  <span style={styles.pill("#f39c12")}>Watch</span>
-                </div>
-              ))}
-          </div>
+          </>
         )}
       </div>
     </div>

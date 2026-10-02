@@ -53,12 +53,20 @@ const styles = {
     borderBottom: active ? "3px solid #0f9b6e" : "3px solid transparent",
     transition: "all 0.2s ease",
   }),
-  form: {
+  // Both forms share one grid cell so the card height = taller form
+  formStack: {
+    display: "grid",
+  },
+  form: (active) => ({
+    gridArea: "1 / 1",
     padding: "28px",
     display: "flex",
     flexDirection: "column",
     gap: "16px",
-  },
+    boxSizing: "border-box",
+    visibility: active ? "visible" : "hidden",
+    pointerEvents: active ? "auto" : "none",
+  }),
   label: {
     fontSize: "13px",
     fontWeight: 600,
@@ -108,6 +116,10 @@ const styles = {
     fontSize: "11.5px",
     color: "#667",
     lineHeight: 1.6,
+    minHeight: "58px",
+    display: "flex",
+    alignItems: "center",
+    boxSizing: "border-box",
   },
   footer: {
     textAlign: "center",
@@ -144,6 +156,9 @@ export default function LoginPage({ onConsumerLogin, onGovLogin }) {
     if (result && !result.ok) setError(result.message);
   };
 
+  const isConsumer = tab === "consumer";
+  const isGov = tab === "gov";
+
   return (
     <div style={styles.page}>
       <div>
@@ -157,7 +172,8 @@ export default function LoginPage({ onConsumerLogin, onGovLogin }) {
 
           <div style={styles.tabRow}>
             <button
-              style={styles.tabBtn(tab === "consumer")}
+              type="button"
+              style={styles.tabBtn(isConsumer)}
               onClick={() => {
                 setTab("consumer");
                 setError("");
@@ -166,7 +182,8 @@ export default function LoginPage({ onConsumerLogin, onGovLogin }) {
               👤 Consumer Login
             </button>
             <button
-              style={styles.tabBtn(tab === "gov")}
+              type="button"
+              style={styles.tabBtn(isGov)}
               onClick={() => {
                 setTab("gov");
                 setError("");
@@ -176,8 +193,13 @@ export default function LoginPage({ onConsumerLogin, onGovLogin }) {
             </button>
           </div>
 
-          {tab === "consumer" ? (
-            <form style={styles.form} onSubmit={handleConsumerSubmit}>
+          <div style={styles.formStack}>
+            {/* Consumer form */}
+            <form
+              style={styles.form(isConsumer)}
+              onSubmit={handleConsumerSubmit}
+              aria-hidden={!isConsumer}
+            >
               <div style={styles.label}>Consumer ID</div>
               <input
                 style={styles.input}
@@ -187,6 +209,7 @@ export default function LoginPage({ onConsumerLogin, onGovLogin }) {
                 onChange={(e) => setConsumerId(e.target.value)}
                 onFocus={(e) => (e.target.style.borderColor = "#16a085")}
                 onBlur={(e) => (e.target.style.borderColor = "#ddd")}
+                tabIndex={isConsumer ? 0 : -1}
                 required
               />
 
@@ -199,17 +222,19 @@ export default function LoginPage({ onConsumerLogin, onGovLogin }) {
                 onChange={(e) => setPhone(e.target.value)}
                 onFocus={(e) => (e.target.style.borderColor = "#16a085")}
                 onBlur={(e) => (e.target.style.borderColor = "#ddd")}
+                tabIndex={isConsumer ? 0 : -1}
                 required
               />
               <div style={styles.hint}>
                 Your registered mobile number is used as your password.
               </div>
 
-              {error && <div style={styles.error}>{error}</div>}
+              {isConsumer && error && <div style={styles.error}>{error}</div>}
 
               <button
                 type="submit"
                 style={styles.submitBtn}
+                tabIndex={isConsumer ? 0 : -1}
                 onMouseDown={(e) => (e.currentTarget.style.opacity = 0.85)}
                 onMouseUp={(e) => (e.currentTarget.style.opacity = 1)}
               >
@@ -217,12 +242,19 @@ export default function LoginPage({ onConsumerLogin, onGovLogin }) {
               </button>
 
               <div style={styles.demoBox}>
-                <b>Demo IDs:</b> BBDU-CN-1001 / 9876543210 &nbsp;|&nbsp;
-                BBDU-CN-1003 / 9988776655
+                <span>
+                  <b>Demo IDs:</b> BBDU-CN-1001 / 9876543210 &nbsp;|&nbsp;
+                  BBDU-CN-1003 / 9988776655
+                </span>
               </div>
             </form>
-          ) : (
-            <form style={styles.form} onSubmit={handleGovSubmit}>
+
+            {/* Government form */}
+            <form
+              style={styles.form(isGov)}
+              onSubmit={handleGovSubmit}
+              aria-hidden={!isGov}
+            >
               <div style={styles.label}>Username</div>
               <input
                 style={styles.input}
@@ -232,6 +264,7 @@ export default function LoginPage({ onConsumerLogin, onGovLogin }) {
                 onChange={(e) => setGovUser(e.target.value)}
                 onFocus={(e) => (e.target.style.borderColor = "#16a085")}
                 onBlur={(e) => (e.target.style.borderColor = "#ddd")}
+                tabIndex={isGov ? 0 : -1}
                 required
               />
 
@@ -244,14 +277,17 @@ export default function LoginPage({ onConsumerLogin, onGovLogin }) {
                 onChange={(e) => setGovPass(e.target.value)}
                 onFocus={(e) => (e.target.style.borderColor = "#16a085")}
                 onBlur={(e) => (e.target.style.borderColor = "#ddd")}
+                tabIndex={isGov ? 0 : -1}
                 required
               />
+              <div style={styles.hint}>Authorized government personnel only.</div>
 
-              {error && <div style={styles.error}>{error}</div>}
+              {isGov && error && <div style={styles.error}>{error}</div>}
 
               <button
                 type="submit"
                 style={styles.submitBtn}
+                tabIndex={isGov ? 0 : -1}
                 onMouseDown={(e) => (e.currentTarget.style.opacity = 0.85)}
                 onMouseUp={(e) => (e.currentTarget.style.opacity = 1)}
               >
@@ -259,10 +295,12 @@ export default function LoginPage({ onConsumerLogin, onGovLogin }) {
               </button>
 
               <div style={styles.demoBox}>
-                <b>Demo credentials:</b> admin / grid@2026
+                <span>
+                  <b>Demo credentials:</b> admin / grid@2026
+                </span>
               </div>
             </form>
-          )}
+          </div>
         </div>
         <div style={styles.footer}>
           Babu Banarasi Das University · Dept. of CSE (AI) · Minor Project 2026-27

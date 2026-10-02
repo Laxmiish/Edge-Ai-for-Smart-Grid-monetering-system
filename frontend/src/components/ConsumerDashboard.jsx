@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 const styles = {
   page: {
@@ -120,6 +120,7 @@ const styles = {
     border: `1px solid ${ok ? "#b7ecd6" : "#ffdca8"}`,
     borderRadius: "10px",
     padding: "16px 18px",
+    marginBottom: "14px",
   }),
   payBtn: {
     background: "#16a085",
@@ -129,6 +130,16 @@ const styles = {
     borderRadius: "8px",
     fontWeight: 700,
     fontSize: "13.5px",
+    cursor: "pointer",
+  },
+  smallPayBtn: {
+    background: "#16a085",
+    color: "#fff",
+    border: "none",
+    padding: "6px 14px",
+    borderRadius: "6px",
+    fontWeight: 700,
+    fontSize: "12px",
     cursor: "pointer",
   },
   alertBox: {
@@ -141,6 +152,7 @@ const styles = {
     marginBottom: "20px",
     fontWeight: 600,
   },
+  tableWrap: { overflowX: "auto" },
   liveDot: {
     display: "inline-block",
     width: "8px",
@@ -159,52 +171,162 @@ const statusColors = {
   Overdue: "#e74c3c",
 };
 
-export default function ConsumerDashboard({ consumer, onLogout, onPay }) {
-  // Guard: If the backend hasn't returned consumer data yet, show a loading indicator
-  // instead of crashing on null property access.
-  if (!consumer) {
-    return (
-      <div style={styles.page}>
-        <div style={styles.topbar}>
-          <div style={styles.brand}>⚡ Consumer Dashboard</div>
-          <button style={styles.logoutBtn} onClick={onLogout}>Logout</button>
-        </div>
-        <div style={{ ...styles.container, textAlign: "center", paddingTop: "60px" }}>
-          <div style={{ fontSize: "18px", color: "#8a97a0" }}>Loading your dashboard...</div>
-          <div style={{ fontSize: "13px", color: "#a4aeb5", marginTop: "8px" }}>
-            If this persists, the backend may still be starting up. Please wait a moment.
-          </div>
-        </div>
-      </div>
-    );
-  }
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-  // Simulated live telemetry — nudges usage/solar values slightly every few
-  // seconds to represent the Edge DPU streaming fresh readings.
+// ---- Simulation settings -------------------------------------------------
+// Live data har 3 sec mein update hota hai. Bill dheere dheere badhe iske liye
+// har tick ko sirf "SIM_MINUTES_PER_TICK" minute ke barabar maan rahe hain.
+// (0.25 => ~2 kW load par bill lagbhag Rs 0.07 per tick badhta hai.)
+// Real-time chahiye to isse 0.05 kar do (3 sec = 0.05 min).
+const TICK_MS = 3000;
+const SIM_MINUTES_PER_TICK = 0.25;
+// ---------------------------------------------------------------------------
+
+// Month short name (e.g. "Sep") -> us bill ke generate hone ki date (agle mahine ki 1st)
+function getGeneratedOn(monthShort, today) {
+  const idx = MONTHS.indexOf(monthShort);
+  if (idx === -1) return "1st of next month";
+  // Agar bill-month abhi ke mahine se aage ka hai, to wo pichhle saal ka hai
+  const billYear = idx > today.getMonth() ? today.getFullYear() - 1 : today.getFullYear();
+  const genMonth = (idx + 1) % 12;
+  const genYear = idx === 11 ? billYear + 1 : billYear;
+  return `1 ${MONTHS[genMonth]} ${genYear}`;
+}
+
+function getBillYear(monthShort, today) {
+  const idx = MONTHS.indexOf(monthShort);
+  return idx > today.getMonth() ? today.getFullYear() - 1 : today.getFullYear();
+}
+
+export default function ConsumerDashboard({ consumer, onLogout, onPay }) {
+  const today = new Date();
+  const currentMonthShort = MONTHS[today.getMonth()];
+  const currentYear = today.getFullYear();
+
+  // Current mahine ko history se alag rakhte hain (agar history mein already hai to hata do)
+  const pastHistory = useMemo(
+    () => consumer.billingHistory.filter((h) => h.month !== currentMonthShort),
+    [consumer, currentMonthShort]
+  );
+
+  // Rate per unit: consumer.ratePerUnit ho to wahi, warna history ke average se nikalo
+  const ratePerUnit = useMemo(() => {
+    if (consumer.ratePerUnit) return consumer.ratePerUnit;
+    const totalUnits = pastHistory.reduce((s, h) => s + h.units, 0);
+    const totalAmount = pastHistory.reduce((s, h) => s + h.amount, 0);
+    return totalUnits > 0 ? totalAmount / totalUnits : 7;
+  }, [consumer, pastHistory]);
+
+  const fixedCharge = consumer.fixedCharge || 0;
+
+  // Mahine ki shuruaat se ab tak consume hui units (starting point).
+  // consumer.currentMonthUnits de sakte ho, warna average daily usage se estimate hoga.
+  const startingUnits = useMemo(() => {
+    if (typeof consumer.currentMonthUnits === "number") return consumer.currentMonthUnits;
+    const last = pastHistory[pastHistory.length - 1];
+    const avgDaily = last ? last.units / 30 : 0;
+    return +(avgDaily * (today.getDate() - 1)).toFixed(2);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [consumer, pastHistory]);
+
   const [live, setLive] = useState({
     usage: consumer.currentUsageKW,
     solar: consumer.solarGenKW,
   });
+  // Current mahine ki total units (live badhti rahegi)
+  const [monthUnits, setMonthUnits] = useState(startingUnits);
 
   useEffect(() => {
     setLive({ usage: consumer.currentUsageKW, solar: consumer.solarGenKW });
+    setMonthUnits(startingUnits);
+
     const id = setInterval(() => {
       setLive((prev) => {
         const usageDelta = (Math.random() - 0.5) * 0.3;
         const solarDelta = consumer.hasSolar ? (Math.random() - 0.5) * 0.25 : 0;
-        return {
+        const next = {
           usage: Math.max(0.1, +(prev.usage + usageDelta).toFixed(2)),
           solar: Math.max(0, +(prev.solar + solarDelta).toFixed(2)),
         };
+
+        // Net grid se li gayi energy (kWh) = max(0, usage - solar) * time
+        const netKW = Math.max(0, next.usage - next.solar);
+        const addedUnits = netKW * (SIM_MINUTES_PER_TICK / 60);
+        setMonthUnits((u) => +(u + addedUnits).toFixed(3));
+
+        return next;
       });
-    }, 3000);
+    }, TICK_MS);
     return () => clearInterval(id);
-  }, [consumer]);
+  }, [consumer, startingUnits]);
 
   const netLoad = +(live.usage - live.solar).toFixed(2);
   const loadPct = Math.min(100, (live.usage / consumer.sanctionedLoadKW) * 100);
 
-  const maxUnits = Math.max(...consumer.billingHistory.map((h) => h.units));
+  // ---- Current month ka live bill ----
+  const currentMonthBill = +(monthUnits * ratePerUnit + fixedCharge).toFixed(2);
+
+  // ---- Unpaid bills (har mahine ki 1 tarikh ko pichhle mahine ka bill aata hai) ----
+  const unpaidBills = useMemo(() => {
+    let list;
+
+    if (Array.isArray(consumer.unpaidBills)) {
+      // Best: backend se seedha unpaid list
+      list = consumer.unpaidBills;
+    } else {
+      // History mein jis bill ka status/paid flag hai usse nikalo
+      list = pastHistory.filter(
+        (h) => h.paid === false || (h.status && h.status !== "Paid")
+      );
+
+      // Fallback: purane data mein sirf consumer.billStatus tha -> last month ka bill unpaid maan lo
+      if (list.length === 0 && consumer.billStatus && consumer.billStatus !== "Paid") {
+        const last = pastHistory[pastHistory.length - 1];
+        if (last) {
+          list = [{ ...last, status: consumer.billStatus, dueDate: consumer.dueDate }];
+        }
+      }
+    }
+
+    return list.map((b) => ({
+      ...b,
+      status: b.status || "Due",
+      generatedOn: b.generatedOn || getGeneratedOn(b.month, today),
+      year: b.year || getBillYear(b.month, today),
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [consumer, pastHistory]);
+
+  const totalOutstanding = unpaidBills.reduce((s, b) => s + b.amount, 0);
+  const hasOverdue = unpaidBills.some((b) => b.status === "Overdue");
+  const overallStatus =
+    unpaidBills.length === 0 ? "Paid" : hasOverdue ? "Overdue" : "Due";
+
+  // Consumption chart: purane mahine + current mahine (live)
+  const chartData = [
+    ...pastHistory.map((h) => ({ month: h.month, units: h.units, current: false })),
+    { month: currentMonthShort, units: +monthUnits.toFixed(1), current: true },
+  ];
+  const maxUnits = Math.max(...chartData.map((h) => h.units), 1);
+
+  // Billing history table: current mahine ki row (running) + purane bills
+  const historyRows = [
+    {
+      month: currentMonthShort,
+      year: currentYear,
+      units: +monthUnits.toFixed(1),
+      amount: currentMonthBill,
+      running: true,
+    },
+    ...[...pastHistory].reverse().map((h) => ({
+      ...h,
+      year: h.year || getBillYear(h.month, today),
+      running: false,
+    })),
+  ];
+
+  const isUnpaid = (h) =>
+    unpaidBills.some((b) => b.month === h.month && b.year === h.year);
 
   return (
     <div style={styles.page}>
@@ -234,8 +356,8 @@ export default function ConsumerDashboard({ consumer, onLogout, onPay }) {
               Transformer: {consumer.transformerId} · Category: {consumer.category}
             </div>
           </div>
-          <span style={styles.badge(statusColors[consumer.billStatus])}>
-            Bill {consumer.billStatus}
+          <span style={styles.badge(statusColors[overallStatus])}>
+            {overallStatus === "Paid" ? "All Bills Paid" : `Bill ${overallStatus}`}
           </span>
         </div>
 
@@ -280,44 +402,109 @@ export default function ConsumerDashboard({ consumer, onLogout, onPay }) {
           </div>
 
           <div style={{ ...styles.statCard, borderLeftColor: "#8e44ad" }}>
-            <div style={styles.statLabel}>Current Bill</div>
-            <div style={styles.statValue}>₹{consumer.currentBill.toLocaleString("en-IN")}</div>
-            <div style={styles.statSub}>Due by {consumer.dueDate}</div>
+            <div style={styles.statLabel}>
+              <span style={styles.liveDot}></span>
+              Current Bill ({currentMonthShort} {currentYear})
+            </div>
+            <div style={styles.statValue}>
+              ₹{currentMonthBill.toLocaleString("en-IN", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })}
+            </div>
+            <div style={styles.statSub}>
+              {monthUnits.toFixed(1)} units so far · ₹{ratePerUnit.toFixed(2)}/unit · bill generates on 1{" "}
+              {MONTHS[(today.getMonth() + 1) % 12]}
+            </div>
           </div>
         </div>
 
         <div style={styles.section}>
           <div style={styles.sectionTitle}>Billing Status</div>
-          <div style={styles.billBanner(consumer.billStatus === "Paid")}>
+
+          <div style={styles.billBanner(unpaidBills.length === 0)}>
             <div>
-              <div style={{ fontWeight: 700, fontSize: "16px", color: "#1b2b34" }}>
-                ₹{consumer.currentBill.toLocaleString("en-IN")}
-              </div>
-              <div style={{ fontSize: "12.5px", color: "#7a8a94", marginTop: "4px" }}>
-                {consumer.billStatus === "Paid"
-                  ? "Your latest bill has been paid. Thank you!"
-                  : `Payment ${consumer.billStatus.toLowerCase()} — due ${consumer.dueDate}`}
-              </div>
+              {unpaidBills.length === 0 ? (
+                <>
+                  <div style={{ fontWeight: 700, fontSize: "16px", color: "#1b2b34" }}>
+                    No unpaid bills
+                  </div>
+                  <div style={{ fontSize: "12.5px", color: "#7a8a94", marginTop: "4px" }}>
+                    All your previous bills have been paid. Thank you!
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontWeight: 700, fontSize: "16px", color: "#1b2b34" }}>
+                    ₹{totalOutstanding.toLocaleString("en-IN")} outstanding
+                  </div>
+                  <div style={{ fontSize: "12.5px", color: "#7a8a94", marginTop: "4px" }}>
+                    {unpaidBills.length} unpaid bill{unpaidBills.length > 1 ? "s" : ""} ·
+                    bills are generated on the 1st of every month
+                  </div>
+                </>
+              )}
             </div>
-            {consumer.billStatus !== "Paid" && (
-              <button style={styles.payBtn} onClick={onPay}>
-                Pay Now
+            {unpaidBills.length > 0 && (
+              <button style={styles.payBtn} onClick={() => onPay && onPay(unpaidBills)}>
+                Pay All
               </button>
             )}
           </div>
+
+          {unpaidBills.length > 0 && (
+            <div style={styles.tableWrap}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Bill Month</th>
+                    <th style={styles.th}>Generated On</th>
+                    <th style={styles.th}>Units</th>
+                    <th style={styles.th}>Amount</th>
+                    <th style={styles.th}>Due Date</th>
+                    <th style={styles.th}>Status</th>
+                    <th style={styles.th}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {unpaidBills.map((b) => (
+                    <tr key={`${b.month}-${b.year}`}>
+                      <td style={styles.td}>
+                        {b.month} {b.year}
+                      </td>
+                      <td style={styles.td}>{b.generatedOn}</td>
+                      <td style={styles.td}>{b.units} kWh</td>
+                      <td style={styles.td}>₹{b.amount.toLocaleString("en-IN")}</td>
+                      <td style={styles.td}>{b.dueDate || consumer.dueDate}</td>
+                      <td style={styles.td}>
+                        <span style={styles.badge(statusColors[b.status] || statusColors.Due)}>
+                          {b.status}
+                        </span>
+                      </td>
+                      <td style={styles.td}>
+                        <button style={styles.smallPayBtn} onClick={() => onPay && onPay(b)}>
+                          Pay Now
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
 
         <div style={styles.section}>
-          <div style={styles.sectionTitle}>Consumption History (last 6 months)</div>
+          <div style={styles.sectionTitle}>Consumption History (last 6 months + this month)</div>
           <div style={styles.chartRow}>
-            {consumer.billingHistory.map((h) => (
+            {chartData.map((h) => (
               <div style={styles.chartCol} key={h.month}>
                 <div
                   style={styles.bar(
                     Math.max(10, (h.units / maxUnits) * 130),
-                    h.month === "Sep" ? "#16a085" : "#9fd8c9"
+                    h.current ? "#16a085" : "#9fd8c9"
                   )}
-                  title={`${h.units} units`}
+                  title={`${h.units} units${h.current ? " (so far)" : ""}`}
                 ></div>
                 <div style={styles.chartLabel}>{h.month}</div>
               </div>
@@ -327,24 +514,38 @@ export default function ConsumerDashboard({ consumer, onLogout, onPay }) {
 
         <div style={styles.section}>
           <div style={styles.sectionTitle}>Billing History</div>
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                <th style={styles.th}>Month</th>
-                <th style={styles.th}>Units Consumed</th>
-                <th style={styles.th}>Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[...consumer.billingHistory].reverse().map((h) => (
-                <tr key={h.month}>
-                  <td style={styles.td}>{h.month} 2026</td>
-                  <td style={styles.td}>{h.units} kWh</td>
-                  <td style={styles.td}>₹{h.amount.toLocaleString("en-IN")}</td>
+          <div style={styles.tableWrap}>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>Month</th>
+                  <th style={styles.th}>Units Consumed</th>
+                  <th style={styles.th}>Amount</th>
+                  <th style={styles.th}>Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {historyRows.map((h) => (
+                  <tr key={`${h.month}-${h.year}`}>
+                    <td style={styles.td}>
+                      {h.month} {h.year}
+                    </td>
+                    <td style={styles.td}>{h.units} kWh</td>
+                    <td style={styles.td}>₹{h.amount.toLocaleString("en-IN")}</td>
+                    <td style={styles.td}>
+                      {h.running ? (
+                        <span style={styles.badge("#3498db")}>Running</span>
+                      ) : isUnpaid(h) ? (
+                        <span style={styles.badge(statusColors.Due)}>Unpaid</span>
+                      ) : (
+                        <span style={styles.badge(statusColors.Paid)}>Paid</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
