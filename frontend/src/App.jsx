@@ -1,11 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import LoginPage from "./components/LoginPage";
 import ConsumerDashboard from "./components/ConsumerDashboard";
 import GovernmentDashboard from "./components/GovernmentDashboard";
 
-// Uses the Vite proxy in development (see vite.config.js) to forward /api/* to the Express backend.
-// In production, this relative path works behind any reverse proxy (NGINX, etc.).
-const API_URL = "/api";
+const API_URL = "http://localhost:3000/api";
 
 export default function App() {
   const [view, setView] = useState("login"); // 'login' | 'consumer' | 'gov'
@@ -13,6 +11,11 @@ export default function App() {
 
   const [consumers, setConsumers] = useState([]);
   const [transformers, setTransformers] = useState([]);
+  const [faults, setFaults] = useState([]);
+
+  // Polling ke time state tabhi update karte hain jab data sach mein badla ho,
+  // warna dashboards ki live simulation (useEffect) har 5 sec par reset ho jayegi.
+  const lastSnapshot = useRef({ faults: "", transformers: "" });
 
   // Fetch data on load
   const loadData = async () => {
@@ -29,13 +32,44 @@ export default function App() {
     }
   };
 
-  // Load data from the backend on first render, then auto-refresh every 15 seconds
-  // so the dashboard stays in sync with the Edge DPU telemetry stream.
   useEffect(() => {
     loadData();
-    const interval = setInterval(loadData, 15000);
-    return () => clearInterval(interval);
   }, []);
+
+  // Fault + transformer status ko gov dashboard khuli ho tab har 5 sec par refresh karo
+  const loadFaultsAndTransformers = async () => {
+    try {
+      const [fRes, tRes] = await Promise.all([
+        fetch(`${API_URL}/faults`),
+        fetch(`${API_URL}/transformers`),
+      ]);
+      const [fData, tData] = await Promise.all([fRes.json(), tRes.json()]);
+
+      if (Array.isArray(fData)) {
+        const snap = JSON.stringify(fData);
+        if (snap !== lastSnapshot.current.faults) {
+          lastSnapshot.current.faults = snap;
+          setFaults(fData);
+        }
+      }
+      if (Array.isArray(tData)) {
+        const snap = JSON.stringify(tData);
+        if (snap !== lastSnapshot.current.transformers) {
+          lastSnapshot.current.transformers = snap;
+          setTransformers(tData);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to fetch faults:", e);
+    }
+  };
+
+  useEffect(() => {
+    if (view !== "gov") return;
+    loadFaultsAndTransformers();
+    const id = setInterval(loadFaultsAndTransformers, 5000);
+    return () => clearInterval(id);
+  }, [view]);
 
   const handleConsumerLogin = async (consumerId, phone) => {
     try {
@@ -86,6 +120,19 @@ export default function App() {
     }
   };
 
+  const handleResolveFault = async (faultId) => {
+    try {
+      await fetch(`${API_URL}/faults/${faultId}/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      await loadFaultsAndTransformers();
+    } catch (e) {
+      console.error("Resolve fault failed", e);
+    }
+  };
+
   const handleToggleSolar = async (transformerId) => {
     try {
       await fetch(`${API_URL}/transformers/${transformerId}/toggle-solar`, { method: "POST" });
@@ -126,6 +173,8 @@ export default function App() {
       <GovernmentDashboard
         consumers={consumers}
         transformers={transformers}
+        faults={faults}
+        onResolveFault={handleResolveFault}
         onLogout={handleLogout}
         onToggleSolar={handleToggleSolar}
         onAddSolarPlant={handleAddSolarPlant}

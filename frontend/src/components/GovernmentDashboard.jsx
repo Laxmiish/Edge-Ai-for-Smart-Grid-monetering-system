@@ -237,12 +237,24 @@ const styles = {
 const billBadge = { Paid: "#2ecc71", Due: "#f39c12", Overdue: "#e74c3c" };
 const statusBadge = { Healthy: "#2ecc71", Watch: "#f39c12", Critical: "#e74c3c" };
 
+const faultTitle = {
+  OVERLOAD: "Transformer overload",
+  PREDICTED_OVERLOAD: "Predicted overload (Edge AI)",
+  OVERHEAT: "Overheating",
+  LOAD_DROP: "Sudden load drop",
+  SOLAR_UNDERPERFORMANCE: "Solar underperformance",
+  SENSOR_FLATLINE: "Stuck sensor",
+  COMMUNICATION_LOSS: "Communication loss",
+};
+
 const formatTime = (ts) =>
   new Date(ts).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
 
 export default function GovernmentDashboard({
   consumers,
   transformers,
+  faults = [],
+  onResolveFault,
   onLogout,
   onToggleSolar,
   onAddSolarPlant,
@@ -344,38 +356,50 @@ export default function GovernmentDashboard({
         })
       );
 
-    sortedTransformers
-      .filter((t) => t.status !== "Healthy")
-      .forEach((t) =>
-        list.push({
-          id: `trf-${t.transformerId}`,
-          type: "transformer",
-          level: "medium",
-          pillColor: "#f39c12",
-          pillText: "Watch",
-          body: (
-            <>
-              🔧 <b>Transformer watch</b> — {t.transformerId} ({t.location}) load
-              trending high, recommend inspection.
-            </>
-          ),
-        })
-      );
+    // Fault detection engine (backend) se aaye faults
+    faults.forEach((f) =>
+      list.push({
+        id: `fault-${f.id}`,
+        type: "fault",
+        level: f.severity === "CRITICAL" ? "high" : "medium",
+        pillColor: f.severity === "CRITICAL" ? "#e74c3c" : "#f39c12",
+        pillText: f.severity === "CRITICAL" ? "Critical" : "Warning",
+        serverStatus: f.status,
+        resolvedAt: f.resolvedAt ? new Date(f.resolvedAt).getTime() : null,
+        resolvedLabel: f.status === "auto_cleared" ? "Auto-cleared" : "Resolved",
+        body: (
+          <>
+            🔧 <b>{faultTitle[f.type] || f.type}</b> — {f.transformerId}: {f.message}
+          </>
+        ),
+      })
+    );
 
     return list;
-  }, [consumers, sortedTransformers]);
+  }, [consumers, faults]);
 
-  const activeAlerts = allAlerts.filter((a) => !resolved[a.id]);
+  // Fault alerts ka resolved status server (DB) se aata hai, baaki ka local state se
+  const isResolved = (a) => (a.type === "fault" ? a.serverStatus !== "open" : !!resolved[a.id]);
+  const resolvedTime = (a) => (a.type === "fault" ? a.resolvedAt : resolved[a.id]);
+
+  const activeAlerts = allAlerts.filter((a) => !isResolved(a));
   const resolvedAlerts = allAlerts
-    .filter((a) => resolved[a.id])
-    .sort((a, b) => resolved[b.id] - resolved[a.id]);
+    .filter(isResolved)
+    .sort((a, b) => (resolvedTime(b) || 0) - (resolvedTime(a) || 0));
 
   // Overview card ke counts (sirf unresolved)
   const theftCount = activeAlerts.filter((a) => a.type === "theft").length;
   const overdueCount = activeAlerts.filter((a) => a.type === "overdue").length;
-  const transformerAlertCount = activeAlerts.filter((a) => a.type === "transformer").length;
+  const faultAlertCount = activeAlerts.filter((a) => a.type === "fault").length;
 
-  const resolveAlert = (id) => setResolved((prev) => ({ ...prev, [id]: Date.now() }));
+  const resolveAlert = (id) => {
+    if (id.startsWith("fault-")) {
+      // Fault ko DB mein resolved mark karo (refresh par bhi saved rahega)
+      if (onResolveFault) onResolveFault(Number(id.slice(6)));
+      return;
+    }
+    setResolved((prev) => ({ ...prev, [id]: Date.now() }));
+  };
   const reopenAlert = (id) =>
     setResolved((prev) => {
       const next = { ...prev };
@@ -449,7 +473,7 @@ export default function GovernmentDashboard({
                 <div style={styles.statValue}>{activeAlerts.length}</div>
                 <div style={styles.statSub}>
                   {theftCount} theft flags · {overdueCount} overdue bills ·{" "}
-                  {transformerAlertCount} transformer watch
+                  {faultAlertCount} equipment faults
                 </div>
               </div>
             </div>
@@ -620,7 +644,7 @@ export default function GovernmentDashboard({
           <>
             <div style={styles.section}>
               <div style={styles.sectionTitle}>
-                Theft &amp; Billing Alerts ({activeAlerts.length})
+                Theft, Billing &amp; Fault Alerts ({activeAlerts.length})
               </div>
 
               {activeAlerts.length === 0 && (
@@ -675,18 +699,20 @@ export default function GovernmentDashboard({
                       <span style={{ flex: 1, minWidth: "220px" }}>
                         {a.body}
                         <div style={{ fontSize: "11.5px", marginTop: "4px", color: "#a4aeb5" }}>
-                          Resolved on {formatTime(resolved[a.id])}
+                          {a.resolvedLabel || "Resolved"} on {formatTime(resolvedTime(a))}
                         </div>
                       </span>
                       <div style={styles.alertActions}>
-                        <span style={styles.pill("#2ecc71")}>Resolved</span>
-                        <button
-                          type="button"
-                          style={styles.reopenBtn}
-                          onClick={() => reopenAlert(a.id)}
-                        >
-                          Reopen
-                        </button>
+                        <span style={styles.pill("#2ecc71")}>{a.resolvedLabel || "Resolved"}</span>
+                        {a.type !== "fault" && (
+                          <button
+                            type="button"
+                            style={styles.reopenBtn}
+                            onClick={() => reopenAlert(a.id)}
+                          >
+                            Reopen
+                          </button>
+                        )}
                       </div>
                     </div>
                   ))}
