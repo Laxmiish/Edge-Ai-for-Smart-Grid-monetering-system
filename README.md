@@ -104,12 +104,15 @@ You can test the system using the following consumer credentials:
 
 
 <!--
-to run the project
+TO RUN THE PROJECT
 
-terminal 1 --> docker-compose up --build
+Terminal 1:
+docker-compose up --build
 
-terminal 2 --> pip install flask requests
-               python substations/main.py
+Terminal 2:
+pip install flask requests
+python substations/main.py
 
-terminal 3 --> npm run dev
+Terminal 3:
+npm run dev
 -->
