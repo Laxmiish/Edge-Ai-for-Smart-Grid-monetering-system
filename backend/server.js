@@ -2079,6 +2079,43 @@ app.post("/api/faults/:id/resolve", async (req, res) => {
 // BILLING WATCHDOG
 // ============================================================
 
+// Jin bills ki due date nikal chuki hai aur paisa baaki hai,
+// unhe "Overdue" mark karta hai, aur consumer ka bill_status bhi sync karta hai.
+async function updateOverdueBills() {
+  if (!pgConnected) return;
+
+  try {
+    const billResult = await pool.query(`
+      UPDATE bills
+      SET status = 'Overdue'
+      WHERE status = 'Due'
+        AND outstanding_amount > 0.01
+        AND due_date IS NOT NULL
+        AND due_date < CURRENT_DATE
+    `);
+
+    if (billResult.rowCount > 0) {
+      await pool.query(`
+        UPDATE consumers
+        SET bill_status = 'Overdue'
+        WHERE id IN (
+          SELECT DISTINCT consumer_id
+          FROM bills
+          WHERE status = 'Overdue'
+            AND outstanding_amount > 0.01
+        )
+      `);
+
+      console.log(
+        `[Billing] Marked ${billResult.rowCount} bill(s) as Overdue.`
+      );
+    }
+  } catch (error) {
+    console.error("[Billing] Overdue update failed:", error.message);
+  }
+}
+
+// Server start hote hi ek baar chalao, phir har ghante.
 setInterval(
   updateOverdueBills,
   60 * 60 * 1000
@@ -2095,6 +2132,8 @@ async function startServer() {
   faults.startWatchdog();
 
   await initKafka();
+
+  await updateOverdueBills();
 
   app.listen(
     PORT,

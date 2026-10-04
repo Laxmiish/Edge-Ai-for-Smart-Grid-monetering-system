@@ -100,3 +100,11 @@ You can test the system using the following consumer credentials:
 <div align="center">
   <i>Developed for the Future of Smart Grids.</i>
 </div>
+
+
+
+// to run the project 
+// terminal 1 --> docker-compose up --build
+// terminal 2 --> pip install flask requests
+                  python substations/main.py
+// terminal 3 --> npm run dev
