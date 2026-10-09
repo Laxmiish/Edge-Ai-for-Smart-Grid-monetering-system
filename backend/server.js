@@ -63,6 +63,18 @@ async function initDatabase() {
         );
       `);
 
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS maintenance_logs (
+          id SERIAL PRIMARY KEY,
+          transformer_id VARCHAR(50) REFERENCES transformers(id),
+          technician VARCHAR(100),
+          action_taken TEXT,
+          date DATE DEFAULT CURRENT_DATE,
+          cost DOUBLE PRECISION DEFAULT 0,
+          status VARCHAR(50) DEFAULT 'Completed'
+        );
+      `);
+
       // --------------------------------------------------------
       // CONSUMERS
       // --------------------------------------------------------
@@ -507,8 +519,7 @@ async function initDatabase() {
         },
       ];
 
-      for (const c of consumersSeed) {
-        await client.query(
+      await Promise.all(consumersSeed.map(c => client.query(
           `
           INSERT INTO consumers
           (
@@ -560,19 +571,19 @@ async function initDatabase() {
             c.fixed,
             c.currentUnits,
           ]
-        );
-      }
+        )));
 
       // ========================================================
       // CREATE INITIAL BILL LEDGER
       // ========================================================
 
+      const billPromises = [];
       for (const c of consumersSeed) {
         for (const h of c.history) {
           const energyCharge = h.units * c.rate;
           const fixedCharge = c.fixed;
 
-          await client.query(
+          billPromises.push(client.query(
             `
             INSERT INTO bills
             (
@@ -616,8 +627,25 @@ async function initDatabase() {
               h.dueDate,
               h.paid ? new Date() : null,
             ]
-          );
+          ));
         }
+      }
+      await Promise.all(billPromises);
+
+      // ========================================================
+      // SEED MAINTENANCE LOGS
+      // ========================================================
+
+      const logCount = await client.query('SELECT COUNT(*) FROM maintenance_logs');
+      if (Number(logCount.rows[0].count) === 0) {
+        await client.query(`
+          INSERT INTO maintenance_logs (transformer_id, technician, action_taken, date, cost, status)
+          VALUES 
+          ('TRF-A1', 'Rajesh Kumar', 'Replaced blown fuse and checked cooling oil levels', CURRENT_DATE - INTERVAL '15 days', 1500, 'Completed'),
+          ('TRF-A1', 'Amit Singh', 'Routine semi-annual inspection', CURRENT_DATE - INTERVAL '6 months', 500, 'Completed'),
+          ('TRF-A2', 'Amit Singh', 'Upgraded solar inverter relay', CURRENT_DATE - INTERVAL '2 days', 4500, 'Completed'),
+          ('TRF-B1', 'Vikram Singh', 'Replaced high-tension cables', CURRENT_DATE - INTERVAL '1 month', 12000, 'Completed')
+        `);
       }
 
       // Create/migrate the fault-detection schema after transformers exist.
@@ -669,6 +697,8 @@ const kafkaConsumer = kafka.consumer({
   groupId: "grid-monitoring-group",
 });
 
+const USE_KAFKA = process.env.KAFKA_ENABLED === "true";
+
 let kafkaConnected = false;
 
 // ============================================================
@@ -676,6 +706,11 @@ let kafkaConnected = false;
 // ============================================================
 
 async function initKafka() {
+  if (!USE_KAFKA) {
+    console.log("[Kafka] KAFKA_ENABLED is not true. Skipping Kafka connection.");
+    return;
+  }
+  
   try {
     await producer.connect();
 
@@ -1514,13 +1549,9 @@ app.get("/api/consumers", async (req, res) => {
       `
     );
 
-    const consumers = [];
-
-    for (const consumer of result.rows) {
-      consumers.push(
-        await mapConsumerDBtoFrontend(consumer)
-      );
-    }
+    const consumers = await Promise.all(
+      result.rows.map(consumer => mapConsumerDBtoFrontend(consumer))
+    );
 
     res.json(consumers);
   } catch (error) {
@@ -1734,6 +1765,40 @@ app.post(
 );
 
 // ============================================================
+// MAINTENANCE LOGS
+// ============================================================
+
+app.get("/api/maintenance", async (req, res) => {
+  try {
+    if (!pgConnected) return res.status(503).json([]);
+    const result = await pool.query(`
+      SELECT m.*, t.name as transformer_name 
+      FROM maintenance_logs m
+      JOIN transformers t ON m.transformer_id = t.id
+      ORDER BY m.date DESC
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    console.error("[MAINTENANCE]", error.message);
+    res.status(500).json([]);
+  }
+});
+
+app.post("/api/maintenance", async (req, res) => {
+  try {
+    const { transformer_id, technician, action_taken, cost } = req.body;
+    await pool.query(
+      `INSERT INTO maintenance_logs (transformer_id, technician, action_taken, cost) VALUES ($1, $2, $3, $4)`,
+      [transformer_id, technician, action_taken, cost]
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    console.error("[MAINTENANCE POST]", error.message);
+    res.status(500).json({ error: "Failed to add log" });
+  }
+});
+
+// ============================================================
 // TRANSFORMERS
 // ============================================================
 
@@ -1931,8 +1996,6 @@ app.post(
       await saveTelemetry(data);
 
       await faults.evaluate(data);
-
-      await runTheftDetectionEngine(data);
     }
 
     res.json({
@@ -1943,90 +2006,77 @@ app.post(
 );
 
 // ============================================================
+// SERVERLESS DEMO TICK
+// ============================================================
+
+app.post("/api/demo/tick", async (req, res) => {
+  try {
+    const trfId = req.body.transformer_id || "TRF-DEMO-01";
+    let config = { solar_capacity_kw: 5.0, solar_integrated: true };
+    
+    if (pgConnected) {
+      const dbRes = await pool.query("SELECT solar_capacity_kw, solar_integrated FROM transformers WHERE id = $1", [trfId]);
+      if (dbRes.rows.length > 0) {
+        config.solar_capacity_kw = Number(dbRes.rows[0].solar_capacity_kw);
+        config.solar_integrated = req.body.solar_integrated_override !== undefined 
+          ? req.body.solar_integrated_override 
+          : dbRes.rows[0].solar_integrated;
+      }
+    }
+
+    // 1. Call Python Serverless Simulator
+    const pyResponse = await fetch("http://127.0.0.1:5005/api/python/simulate-tick", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...req.body, ...config }),
+    });
+
+    if (!pyResponse.ok) {
+      return res.status(500).json({ error: "Python simulation failed" });
+    }
+
+    const payload = await pyResponse.json();
+
+    // 2. Process payload in Node Backend
+    if (pgConnected) {
+      // The fault engine expects a nested structure matching the DPU output
+      const structuredPayload = {
+        transformer_id: payload.transformer_id,
+        timestamp: payload.timestamp,
+        house_data: payload.house_data,
+        transformer_telemetry: {
+          temperature_c: payload.temperature_c,
+          ambient_light_lux: payload.ambient_light_lux,
+          cloud_cover: payload.cloud_cover,
+          gross_demand_kw: payload.gross_demand_kw,
+          metered_demand_kw: payload.metered_demand_kw,
+          solar_gen_kw: payload.solar_gen_kw,
+          net_load_kw: payload.net_load_kw
+        },
+        edge_analytics: {
+          predicted_net_load_1h_kw: payload.predicted_net_load_kw,
+          status: payload.predicted_net_load_kw > 100 ? "WARNING" : "NORMAL"
+        }
+      };
+
+      await saveTelemetry(structuredPayload);
+      await faults.evaluate(structuredPayload);
+    }
+
+    res.json({ ok: true, payload });
+  } catch (err) {
+    console.error("[DEMO TICK ERROR]", err);
+    res.status(500).json({ error: "Failed to run simulation tick" });
+  }
+});
+
+// ============================================================
 // FAULT DETECTION
 // ============================================================
 // Implemented by backend/faultDetection.js. Telemetry is written first,
 // then faults.evaluate(data) runs against the latest telemetry history.
 
-// ============================================================
-// THEFT DETECTION
-// ============================================================
-
-async function runTheftDetectionEngine(
-  data
-) {
-  if (!pgConnected) return;
-
-  const houses =
-    data.house_data || [];
-
-  if (!houses.length) return;
-
-  /*
-    Basic rule:
-
-    Agar kisi consumer ka sanctioned load
-    bahut zyada exceed ho raha hai,
-    theft/tamper flag set kar sakte hain.
-
-    Ye demo-level rule hai.
-    Production theft detection ke liye
-    proper meter analytics/model chahiye.
-  */
-
-  for (const house of houses) {
-    const houseId =
-      house.house_id;
-
-    const rawDemand =
-      Number(
-        house.raw_demand_kw || 0
-      );
-
-    if (!houseId) continue;
-
-    const consumerResult =
-      await pool.query(
-        `
-        SELECT *
-        FROM consumers
-        WHERE id = $1
-        `,
-        [houseId]
-      );
-
-    if (
-      consumerResult.rows.length === 0
-    ) {
-      continue;
-    }
-
-    const consumer =
-      consumerResult.rows[0];
-
-    const sanctioned =
-      Number(
-        consumer.sanctioned_load_kw
-      );
-
-    if (
-      rawDemand >
-      sanctioned * 1.5
-    ) {
-      await pool.query(
-        `
-        UPDATE consumers
-
-        SET theft_flag = true
-
-        WHERE id = $1
-        `,
-        [houseId]
-      );
-    }
-  }
-}
-
+// THEFT DETECTION has been moved to faultDetection.js (Transformer-level loss)
 // ============================================================
 // FAULT API
 // ============================================================
@@ -2072,6 +2122,26 @@ app.post("/api/faults/:id/resolve", async (req, res) => {
       ok: false,
       message: "Could not resolve fault",
     });
+  }
+});
+
+// ============================================================
+// MAINTENANCE LOGS
+// ============================================================
+
+app.get("/api/maintenance", async (req, res) => {
+  try {
+    if (!pgConnected) return res.status(503).json([]);
+    const result = await pool.query(
+      `SELECT m.*, t.name as transformer_name 
+       FROM maintenance_logs m 
+       JOIN transformers t ON m.transformer_id = t.id 
+       ORDER BY m.date DESC`
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error("[MAINTENANCE LOGS]", error.message);
+    res.status(500).json([]);
   }
 });
 
