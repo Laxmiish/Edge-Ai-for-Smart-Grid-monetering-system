@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
+import DpuSimulator from "./DpuSimulator";
+import PredictiveMaintenance from "./PredictiveMaintenance";
 
 const styles = {
   page: {
@@ -245,6 +247,8 @@ const faultTitle = {
   SOLAR_UNDERPERFORMANCE: "Solar underperformance",
   SENSOR_FLATLINE: "Stuck sensor",
   COMMUNICATION_LOSS: "Communication loss",
+  THEFT_DETECTED: "Unmetered Line Tapping (Katiya Theft)",
+  AGING_HARDWARE: "High Technical Loss (Aging Hardware)",
 };
 
 const formatTime = (ts) =>
@@ -254,6 +258,7 @@ export default function GovernmentDashboard({
   consumers,
   transformers,
   faults = [],
+  maintenanceLogs = [],
   onResolveFault,
   onLogout,
   onToggleSolar,
@@ -263,6 +268,12 @@ export default function GovernmentDashboard({
   const [form, setForm] = useState({
     transformerId: "",
     capacity: "",
+  });
+  const [maintenanceForm, setMaintenanceForm] = useState({
+    transformer_id: "",
+    technician: "",
+    action_taken: "",
+    cost: "",
   });
   const [msg, setMsg] = useState("");
 
@@ -320,25 +331,6 @@ export default function GovernmentDashboard({
     const list = [];
 
     consumers
-      .filter((c) => c.theftFlag)
-      .forEach((c) =>
-        list.push({
-          id: `theft-${c.consumerId}`,
-          type: "theft",
-          level: "high",
-          pillColor: "#e74c3c",
-          pillText: "High",
-          body: (
-            <>
-              ⚠ <b>Possible theft/tamper</b> — {c.name} ({c.consumerId}) on{" "}
-              {c.transformerId}: consumption spiked to 300 units in August, well
-              above baseline.
-            </>
-          ),
-        })
-      );
-
-    consumers
       .filter((c) => c.billStatus === "Overdue")
       .forEach((c) =>
         list.push({
@@ -361,6 +353,7 @@ export default function GovernmentDashboard({
       list.push({
         id: `fault-${f.id}`,
         type: "fault",
+        originalFaultType: f.type,
         level: f.severity === "CRITICAL" ? "high" : "medium",
         pillColor: f.severity === "CRITICAL" ? "#e74c3c" : "#f39c12",
         pillText: f.severity === "CRITICAL" ? "Critical" : "Warning",
@@ -388,7 +381,7 @@ export default function GovernmentDashboard({
     .sort((a, b) => (resolvedTime(b) || 0) - (resolvedTime(a) || 0));
 
   // Overview card ke counts (sirf unresolved)
-  const theftCount = activeAlerts.filter((a) => a.type === "theft").length;
+  const theftCount = activeAlerts.filter((a) => a.originalFaultType === "THEFT_DETECTED").length;
   const overdueCount = activeAlerts.filter((a) => a.type === "overdue").length;
   const faultAlertCount = activeAlerts.filter((a) => a.type === "fault").length;
 
@@ -422,6 +415,27 @@ export default function GovernmentDashboard({
     setTimeout(() => setMsg(""), 4000);
   };
 
+  const handleAddMaintenanceLog = async (e) => {
+    e.preventDefault();
+    try {
+      await fetch("http://localhost:3000/api/maintenance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          transformer_id: maintenanceForm.transformer_id,
+          technician: maintenanceForm.technician,
+          action_taken: maintenanceForm.action_taken,
+          cost: Number(maintenanceForm.cost),
+        }),
+      });
+      setMaintenanceForm({ transformer_id: "", technician: "", action_taken: "", cost: "" });
+      setMsg("Maintenance log added! Refresh to see it.");
+      setTimeout(() => setMsg(""), 4000);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   return (
     <div style={styles.page}>
       <div style={styles.topbar}>
@@ -441,6 +455,9 @@ export default function GovernmentDashboard({
           </button>
           <button style={styles.tabBtn(tab === "consumers")} onClick={() => setTab("consumers")}>
             Consumers &amp; Billing
+          </button>
+          <button style={styles.tabBtn(tab === "maintenance")} onClick={() => setTab("maintenance")}>
+            Maintenance
           </button>
           <button style={styles.tabBtn(tab === "alerts")} onClick={() => setTab("alerts")}>
             Alerts
@@ -599,6 +616,8 @@ export default function GovernmentDashboard({
                 </table>
               </div>
             </div>
+
+            <DpuSimulator transformers={sortedTransformers} />
           </>
         )}
 
@@ -638,6 +657,112 @@ export default function GovernmentDashboard({
               </table>
             </div>
           </div>
+        )}
+
+        {tab === "maintenance" && (
+          <>
+          <div style={styles.section}>
+            <div style={styles.sectionTitle}>➕ Log New Maintenance Action</div>
+            {msg && <div style={styles.successMsg}>{msg}</div>}
+            <form onSubmit={handleAddMaintenanceLog}>
+              <div style={styles.formRow}>
+                <div>
+                  <div style={styles.label}>Transformer</div>
+                  <select
+                    style={styles.input}
+                    value={maintenanceForm.transformer_id}
+                    onChange={(e) => setMaintenanceForm({ ...maintenanceForm, transformer_id: e.target.value })}
+                    required
+                  >
+                    <option value="">Select transformer</option>
+                    {sortedTransformers.map((t) => (
+                      <option key={t.transformerId} value={t.transformerId}>{t.transformerId}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <div style={styles.label}>Technician Name</div>
+                  <input
+                    style={styles.input}
+                    type="text"
+                    value={maintenanceForm.technician}
+                    onChange={(e) => setMaintenanceForm({ ...maintenanceForm, technician: e.target.value })}
+                    required
+                  />
+                </div>
+                <div>
+                  <div style={styles.label}>Cost (₹)</div>
+                  <input
+                    style={styles.input}
+                    type="number"
+                    value={maintenanceForm.cost}
+                    onChange={(e) => setMaintenanceForm({ ...maintenanceForm, cost: e.target.value })}
+                    required
+                  />
+                </div>
+              </div>
+              <div style={styles.formRow}>
+                <div style={{ gridColumn: "1 / -1" }}>
+                  <div style={styles.label}>Action Taken</div>
+                  <input
+                    style={styles.input}
+                    type="text"
+                    placeholder="e.g. Replaced cooling oil"
+                    value={maintenanceForm.action_taken}
+                    onChange={(e) => setMaintenanceForm({ ...maintenanceForm, action_taken: e.target.value })}
+                    required
+                  />
+                </div>
+              </div>
+              <button type="submit" style={styles.addBtn}>
+                Submit Log
+              </button>
+            </form>
+          </div>
+
+          <div style={styles.section}>
+            <div style={styles.sectionTitle}>Transformer Maintenance Records</div>
+            <div style={styles.tableWrap}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Date</th>
+                    <th style={styles.th}>Transformer</th>
+                    <th style={styles.th}>Technician</th>
+                    <th style={styles.th}>Action Taken</th>
+                    <th style={styles.th}>Cost (₹)</th>
+                    <th style={styles.th}>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {maintenanceLogs.map((log) => (
+                    <tr key={log.id}>
+                      <td style={styles.td}>{new Date(log.date).toLocaleDateString("en-IN")}</td>
+                      <td style={styles.td}>{log.transformer_id}</td>
+                      <td style={styles.td}>{log.technician}</td>
+                      <td style={styles.td}>{log.action_taken}</td>
+                      <td style={styles.td}>₹{log.cost.toLocaleString("en-IN")}</td>
+                      <td style={styles.td}>
+                        <span style={styles.pill(log.status === "Completed" ? "#2ecc71" : "#f39c12")}>
+                          {log.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                  {maintenanceLogs.length === 0 && (
+                    <tr>
+                      <td colSpan="6" style={{ ...styles.td, textAlign: "center", color: "#8a97a0", padding: "20px" }}>
+                        No maintenance logs found.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          
+          <PredictiveMaintenance transformers={sortedTransformers} faults={faults} />
+        </>
         )}
 
         {tab === "alerts" && (

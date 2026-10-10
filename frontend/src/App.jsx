@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import LoginPage from "./components/LoginPage";
 import ConsumerDashboard from "./components/ConsumerDashboard";
 import GovernmentDashboard from "./components/GovernmentDashboard";
+import DemoSimulator from "./components/DemoSimulator";
 
 const API_URL = "http://localhost:3000/api";
 
@@ -81,6 +82,7 @@ export default function App() {
   const [consumers, setConsumers] = useState([]);
   const [transformers, setTransformers] = useState([]);
   const [faults, setFaults] = useState([]);
+  const [maintenanceLogs, setMaintenanceLogs] = useState([]);
 
   // 'loading' | 'ready' | 'error'
   const [dataStatus, setDataStatus] = useState("loading");
@@ -113,31 +115,20 @@ export default function App() {
     loadData();
   }, []);
 
-  // Fault + transformer status ko gov dashboard khuli ho tab har 5 sec par refresh karo
   const loadFaultsAndTransformers = async () => {
     try {
-      const [fRes, tRes] = await Promise.all([
+      const [fRes, tRes, mRes] = await Promise.all([
         fetch(`${API_URL}/faults`),
         fetch(`${API_URL}/transformers`),
+        fetch(`${API_URL}/maintenance`),
       ]);
-      const [fData, tData] = await Promise.all([fRes.json(), tRes.json()]);
+      const [fData, tData, mData] = await Promise.all([fRes.json(), tRes.json(), mRes.json()]);
 
-      if (Array.isArray(fData)) {
-        const snap = JSON.stringify(fData);
-        if (snap !== lastSnapshot.current.faults) {
-          lastSnapshot.current.faults = snap;
-          setFaults(fData);
-        }
-      }
-      if (Array.isArray(tData)) {
-        const snap = JSON.stringify(tData);
-        if (snap !== lastSnapshot.current.transformers) {
-          lastSnapshot.current.transformers = snap;
-          setTransformers(tData);
-        }
-      }
+      if (Array.isArray(fData)) setFaults(fData);
+      if (Array.isArray(tData)) setTransformers(tData);
+      if (Array.isArray(mData)) setMaintenanceLogs(mData);
     } catch (e) {
-      console.error("Failed to fetch faults:", e);
+      console.error("Failed to fetch gov data:", e);
     }
   };
 
@@ -243,7 +234,22 @@ export default function App() {
 
   if (view === "login") {
     return (
-      <LoginPage onConsumerLogin={handleConsumerLogin} onGovLogin={handleGovLogin} />
+      <LoginPage 
+        onConsumerLogin={handleConsumerLogin} 
+        onGovLogin={handleGovLogin} 
+        onDemoClick={() => setView("demo")}
+      />
+    );
+  }
+
+  if (view === "demo") {
+    return (
+      <div>
+        <div style={{background: "#2c3e50", padding: "10px", textAlign: "right"}}>
+          <button style={{...centerBtn, background: "#e74c3c", fontSize: "12px", padding: "6px 12px"}} onClick={() => setView("login")}>Exit Demo</button>
+        </div>
+        <DemoSimulator />
+      </div>
     );
   }
 
@@ -309,6 +315,7 @@ export default function App() {
         consumers={consumers}
         transformers={transformers}
         faults={faults}
+        maintenanceLogs={maintenanceLogs}
         onResolveFault={handleResolveFault}
         onLogout={handleLogout}
         onToggleSolar={handleToggleSolar}

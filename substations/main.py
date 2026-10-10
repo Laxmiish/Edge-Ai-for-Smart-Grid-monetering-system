@@ -24,7 +24,7 @@ import local_db
 app = Flask(__name__)
 
 # The Level 3 Cloud Server Endpoint (Express.js backend)
-CENTRAL_CLOUD_ENDPOINT = "http://127.0.0.1:3000/api/cloud/ingest"
+CENTRAL_CLOUD_ENDPOINT = os.getenv("CENTRAL_CLOUD_ENDPOINT", "http://127.0.0.1:3000/api/cloud/ingest")
 
 # Initialize SQLite buffer
 local_db.init_db()

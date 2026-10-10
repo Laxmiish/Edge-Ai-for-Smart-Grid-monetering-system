@@ -173,7 +173,20 @@ def read_house_smart_meters(hour, ambient_light_lux):
             "solar_gen_kw": round(solar_gen, 3),
             "net_demand_kw": net_house_demand
         })
-    return houses, round(total_gross_demand, 3), round(total_solar_gen, 3)
+    
+    metered_demand_kw = total_gross_demand
+    
+    # Simulate Technical Loss (Aging hardware): 5% to 10%
+    technical_loss = metered_demand_kw * random.uniform(0.05, 0.10)
+    
+    # Simulate Non-Technical Loss (Theft / Katiya): 10% chance to add 15 to 20 kW
+    non_technical_loss = 0.0
+    if random.random() < 0.10:
+        non_technical_loss = random.uniform(15.0, 20.0)
+        
+    actual_gross_demand = metered_demand_kw + technical_loss + non_technical_loss
+
+    return houses, round(actual_gross_demand, 3), round(metered_demand_kw, 3), round(total_solar_gen, 3)
 
 
 def compute_rolling_features():
@@ -236,7 +249,7 @@ def process_and_transmit():
         else:
             ambient_light_lux = 0.0
 
-        house_data, gross_demand_kw, total_solar_gen = read_house_smart_meters(now.hour, ambient_light_lux)
+        house_data, gross_demand_kw, metered_demand_kw, total_solar_gen = read_house_smart_meters(now.hour, ambient_light_lux)
         net_load_kw = round(gross_demand_kw - total_solar_gen, 3)
 
         rolling_features = compute_rolling_features()
@@ -275,6 +288,7 @@ def process_and_transmit():
         reading_data = {
             'timestamp': now.isoformat(),
             'gross_demand_kw': gross_demand_kw,
+            'metered_demand_kw': metered_demand_kw,
             'solar_gen_kw': total_solar_gen,
             'net_load_kw': net_load_kw,
             'predicted_net_load_kw': predicted_net_load,

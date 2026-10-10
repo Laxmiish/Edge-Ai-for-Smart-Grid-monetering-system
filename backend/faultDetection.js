@@ -42,6 +42,8 @@ const FAULT_TYPES = [
   "SOLAR_UNDERPERFORMANCE",
   "SENSOR_FLATLINE",
   "COMMUNICATION_LOSS",
+  "THEFT_DETECTED",
+  "AGING_HARDWARE",
 ];
 
 const num = (value) => {
@@ -285,6 +287,9 @@ function createFaultDetector(pool) {
     const ambientLux = num(telemetry.ambient_light_lux);
     const cloudCover = num(telemetry.cloud_cover);
 
+    const meteredDemand = num(telemetry.metered_demand_kw);
+    const grossDemand = num(telemetry.gross_demand_kw);
+
     const ratedCapacity = num(transformer.rated_capacity_kw);
     const solarCapacity = num(transformer.solar_capacity_kw);
 
@@ -440,7 +445,32 @@ function createFaultDetector(pool) {
     }
 
     // ---------------------------------------------------------
-    // 6. SENSOR FLATLINE
+    // 6. LINE LOSS (THEFT VS AGING HARDWARE)
+    // ---------------------------------------------------------
+    
+    if (grossDemand > 0 && meteredDemand > 0) {
+      const loss = grossDemand - meteredDemand;
+      const lossPct = (loss / grossDemand) * 100;
+
+      if (lossPct > 15) {
+        detections.push({
+          type: "THEFT_DETECTED",
+          severity: "CRITICAL",
+          message: `High Discrepancy (Katiya): ${loss.toFixed(1)} kW (${lossPct.toFixed(1)}%) unaccounted for.`,
+          details: { lossKW: loss, lossPct, grossDemand, meteredDemand },
+        });
+      } else if (lossPct > 8) {
+        detections.push({
+          type: "AGING_HARDWARE",
+          severity: "WARNING",
+          message: `Technical Loss: ${loss.toFixed(1)} kW (${lossPct.toFixed(1)}%) dissipated as heat. Check hardware.`,
+          details: { lossKW: loss, lossPct, grossDemand, meteredDemand },
+        });
+      }
+    }
+
+    // ---------------------------------------------------------
+    // 7. SENSOR FLATLINE
     // ---------------------------------------------------------
 
     if (

@@ -129,7 +129,7 @@ const styles = {
   },
 };
 
-export default function LoginPage({ onConsumerLogin, onGovLogin }) {
+export default function LoginPage({ onConsumerLogin, onGovLogin, onDemoClick }) {
   const [tab, setTab] = useState("consumer");
 
   // consumer form state
@@ -303,7 +303,14 @@ export default function LoginPage({ onConsumerLogin, onGovLogin }) {
           </div>
         </div>
         <div style={styles.footer}>
-          Babu Banarasi Das University · Dept. of CSE (AI) · Minor Project 2026-27
+          Babu Banarasi Das University · Dept. of CSE (AI) · Minor Project 2026-27<br/><br/>
+          <button 
+            type="button" 
+            onClick={onDemoClick}
+            style={{background:"transparent", border:"1px solid rgba(255,255,255,0.4)", color:"white", padding:"8px 12px", borderRadius:"6px", cursor:"pointer", fontSize:"12px"}}
+          >
+            Launch Serverless Demo Simulator
+          </button>
         </div>
       </div>
     </div>
