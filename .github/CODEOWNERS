@@ -1,5 +1,1 @@
-# CODEOWNERS for branch v2-main
-# See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
-
-# Set @Laxmiish and @yuvraj303 as code owners for the entire codebase on this branch
 * @Laxmiish @yuvraj303
